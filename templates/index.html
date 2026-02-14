@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小説執筆サポートエディタ</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- サイドバー -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2>📚 プロジェクト</h2>
+                <button id="newProjectBtn" class="btn btn-primary">+ 新規</button>
+            </div>
+            
+            <div class="project-list">
+                <select id="projectSelect" class="select">
+                    <option value="">プロジェクトを選択...</option>
+                </select>
+            </div>
+            
+            <div class="file-list-header">
+                <h3>📄 ファイル</h3>
+            </div>
+            
+            <div id="fileList" class="file-list">
+                <!-- ファイルリストがここに表示されます -->
+            </div>
+        </div>
+        
+        <!-- メインエリア -->
+        <div class="main-content">
+            <div class="toolbar">
+                <div class="file-info">
+                    <span id="currentFileName">ファイルを選択してください</span>
+                </div>
+                <div class="toolbar-buttons">
+                    <button id="saveBtn" class="btn btn-success" disabled>💾 保存</button>
+                </div>
+            </div>
+            
+            <div class="editor-container">
+                <div class="editor-pane">
+                    <h3>✏️ エディタ</h3>
+                    <textarea id="editor" placeholder="ここに文章を書いてください..."></textarea>
+                </div>
+                
+                <div class="preview-pane">
+                    <h3>👁️ プレビュー</h3>
+                    <div id="preview" class="preview-content"></div>
+                </div>
+            </div>
+            
+            <!-- Claude アシスタントパネル -->
+            <div class="claude-panel">
+                <h3>🤖 Claudeアシスタント</h3>
+                
+                <div class="claude-actions">
+                    <button class="btn btn-claude" data-type="character">キャラクター生成</button>
+                    <button class="btn btn-claude" data-type="plot">プロット展開案</button>
+                    <button class="btn btn-claude" data-type="improve">文章推敲</button>
+                    <button class="btn btn-claude" data-type="consistency">整合性チェック</button>
+                    <button class="btn btn-claude" data-type="dialogue">対話シミュレーション</button>
+                </div>
+                
+                <div class="claude-input">
+                    <textarea id="claudeContext" placeholder="Claudeに伝えたい追加情報を入力...（例: 20代の女性キャラクター、明るい性格で...）"></textarea>
+                </div>
+                
+                <div id="claudeResponse" class="claude-response" style="display: none;">
+                    <h4>💡 Claudeからの提案</h4>
+                    <div id="responseContent"></div>
+                    <button id="insertBtn" class="btn btn-primary">エディタに挿入</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- モーダル：新規プロジェクト作成 -->
+    <div id="newProjectModal" class="modal">
+        <div class="modal-content">
+            <h2>新規プロジェクト作成</h2>
+            <input type="text" id="projectNameInput" placeholder="プロジェクト名を入力..." class="input">
+            <div class="modal-buttons">
+                <button id="createProjectBtn" class="btn btn-primary">作成</button>
+                <button id="cancelProjectBtn" class="btn btn-secondary">キャンセル</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
