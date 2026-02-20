@@ -1,96 +1,105 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>小説執筆サポートエディタ</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>小説執筆サポートエディタ</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <!-- CodeMirror -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/default.min.css">
+  <!-- Marked.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+  <!-- CodeMirror -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
 </head>
 <body>
-    <div class="container">
-        <!-- サイドバー -->
-        <div class="sidebar">
-            <div class="sidebar-header">
-                <h2>📚 プロジェクト</h2>
-                <button id="newProjectBtn" class="btn btn-primary">+ 新規</button>
-            </div>
-            
-            <div class="project-list">
-                <select id="projectSelect" class="select">
-                    <option value="">プロジェクトを選択...</option>
-                </select>
-            </div>
-            
-            <div class="file-list-header">
-                <h3>📄 ファイル</h3>
-            </div>
-            
-            <div id="fileList" class="file-list">
-                <!-- ファイルリストがここに表示されます -->
-            </div>
+  <div id="app">
+    <!-- サイドバー -->
+    <aside id="sidebar">
+      <div id="project-section">
+        <h2>📁 プロジェクト</h2>
+        <div id="project-controls">
+          <input type="text" id="new-project-name" placeholder="新規プロジェクト名">
+          <button id="create-project-btn" onclick="createProject()">作成</button>
         </div>
-        
-        <!-- メインエリア -->
-        <div class="main-content">
-            <div class="toolbar">
-                <div class="file-info">
-                    <span id="currentFileName">ファイルを選択してください</span>
-                </div>
-                <div class="toolbar-buttons">
-                    <button id="saveBtn" class="btn btn-success" disabled>💾 保存</button>
-                </div>
-            </div>
-            
-            <div class="editor-container">
-                <div class="editor-pane">
-                    <h3>✏️ エディタ</h3>
-                    <textarea id="editor" placeholder="ここに文章を書いてください..."></textarea>
-                </div>
-                
-                <div class="preview-pane">
-                    <h3>👁️ プレビュー</h3>
-                    <div id="preview" class="preview-content"></div>
-                </div>
-            </div>
-            
-            <!-- Claude アシスタントパネル -->
-            <div class="claude-panel">
-                <h3>🤖 Claudeアシスタント</h3>
-                
-                <div class="claude-actions">
-                    <button class="btn btn-claude" data-type="character">キャラクター生成</button>
-                    <button class="btn btn-claude" data-type="plot">プロット展開案</button>
-                    <button class="btn btn-claude" data-type="improve">文章推敲</button>
-                    <button class="btn btn-claude" data-type="consistency">整合性チェック</button>
-                    <button class="btn btn-claude" data-type="dialogue">対話シミュレーション</button>
-                </div>
-                
-                <div class="claude-input">
-                    <textarea id="claudeContext" placeholder="Claudeに伝えたい追加情報を入力...（例: 20代の女性キャラクター、明るい性格で...）"></textarea>
-                </div>
-                
-                <div id="claudeResponse" class="claude-response" style="display: none;">
-                    <h4>💡 Claudeからの提案</h4>
-                    <div id="responseContent"></div>
-                    <button id="insertBtn" class="btn btn-primary">エディタに挿入</button>
-                </div>
-            </div>
+        <select id="project-select" onchange="loadProject(this.value)" size="1">
+          <option value="">-- プロジェクトを選択 --</option>
+        </select>
+      </div>
+
+      <div id="file-section">
+        <h2>📄 ファイル</h2>
+
+        <!-- ★ timeline.md / worldbuilding.md 作成ボタン -->
+        <div id="quick-create-buttons">
+          <p class="section-label">ファイルを作成</p>
+          <button class="quick-create-btn" onclick="quickCreateFile('timeline.md')" title="タイムラインファイルを作成">
+            📅 timeline.md
+          </button>
+          <button class="quick-create-btn" onclick="quickCreateFile('worldbuilding.md')" title="世界観設定ファイルを作成">
+            🌍 worldbuilding.md
+          </button>
+          <button class="quick-create-btn" onclick="quickCreateFile('character.md')" title="キャラクターファイルを作成">
+            👤 character.md
+          </button>
+          <button class="quick-create-btn" onclick="quickCreateFile('plot.md')" title="プロットファイルを作成">
+            📖 plot.md
+          </button>
         </div>
-    </div>
-    
-    <!-- モーダル：新規プロジェクト作成 -->
-    <div id="newProjectModal" class="modal">
-        <div class="modal-content">
-            <h2>新規プロジェクト作成</h2>
-            <input type="text" id="projectNameInput" placeholder="プロジェクト名を入力..." class="input">
-            <div class="modal-buttons">
-                <button id="createProjectBtn" class="btn btn-primary">作成</button>
-                <button id="cancelProjectBtn" class="btn btn-secondary">キャンセル</button>
-            </div>
+
+        <div id="custom-file-controls">
+          <input type="text" id="new-file-name" placeholder="ファイル名.md">
+          <button onclick="createCustomFile()">＋ 作成</button>
         </div>
-    </div>
-    
-    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+
+        <ul id="file-list"></ul>
+      </div>
+    </aside>
+
+    <!-- メインエリア -->
+    <main id="main">
+      <div id="toolbar">
+        <span id="current-file-label">ファイルを選択してください</span>
+        <button id="save-btn" onclick="saveFile()" disabled>💾 保存</button>
+      </div>
+
+      <div id="editor-area">
+        <div id="editor-pane">
+          <textarea id="editor"></textarea>
+        </div>
+        <div id="preview-pane">
+          <div id="preview"></div>
+        </div>
+      </div>
+
+      <!-- Claude連携パネル -->
+      <div id="claude-panel">
+        <h3>🤖 Claude サポート</h3>
+        <div id="claude-buttons">
+          <button class="claude-btn" onclick="claudeAction('generate_character')">👤 キャラクター生成</button>
+          <button class="claude-btn" onclick="claudeAction('plot_development')">📖 プロット展開案</button>
+          <button class="claude-btn" onclick="claudeAction('generate_timeline')">📅 タイムライン生成</button>
+          <button class="claude-btn" onclick="claudeAction('generate_worldbuilding')">🌍 世界観設定生成</button>
+          <button class="claude-btn" onclick="claudeAction('refine_text')">✏️ 文章推敲</button>
+          <button class="claude-btn" onclick="claudeAction('consistency_check')">🔍 整合性チェック</button>
+          <button class="claude-btn" onclick="claudeAction('dialogue_simulation')">💬 対話シミュレーション</button>
+        </div>
+        <div id="claude-input-area">
+          <textarea id="claude-context" placeholder="追加の指示・要望を入力（任意）"></textarea>
+          <button id="claude-run-btn" onclick="runClaudeAction()" disabled>実行</button>
+        </div>
+        <div id="claude-result-area">
+          <div id="claude-result"></div>
+          <button id="insert-result-btn" onclick="insertResult()" style="display:none">↑ エディタに挿入</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="toast"></div>
+
+  <script src="/static/js/app.js"></script>
 </body>
 </html>

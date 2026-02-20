@@ -1,348 +1,285 @@
+from flask import Flask, request, jsonify, render_template
+import anthropic
 import os
 import json
-from flask import Flask, render_template, request, jsonify
-from flask_cors import CORS
-from anthropic import Anthropic
-from pathlib import Path
 
 app = Flask(__name__)
-CORS(app)
 
-# プロジェクトのルートディレクトリ
-PROJECTS_DIR = Path("projects")
-PROJECTS_DIR.mkdir(exist_ok=True)
+# プロジェクトのベースディレクトリ
+BASE_DIR = os.path.join(os.path.dirname(__file__), 'projects')
+os.makedirs(BASE_DIR, exist_ok=True)
 
-# Anthropic APIクライアント（環境変数からAPIキーを取得）
-# 使用時は環境変数 ANTHROPIC_API_KEY を設定してください
-client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+client = anthropic.Anthropic()
 
-# テンプレート定義
-TEMPLATES = {
-    "character.md": """# キャラクター設定
-
-## 基本情報
-- 名前: 
-- 年齢: 
-- 性別: 
-- 職業: 
-
-## 外見
-- 身長: 
-- 体格: 
-- 髪型・髪色: 
-- 目の色: 
-- 特徴的な外見: 
-
-## 性格
-- 基本的な性格: 
-- 長所: 
-- 短所: 
-- 癖・口癖: 
-
-## 背景
-- 生い立ち: 
-- 家族構成: 
-- 重要な過去の出来事: 
-
-## 目標・動機
-- 物語における目標: 
-- その目標を持つ理由: 
-
-## 人間関係
-- 
-
-## その他
-- 
-""",
-    "plot.md": """# プロット
-
-## 概要
-- タイトル: 
-- ジャンル: 
-- テーマ: 
-- 一行あらすじ: 
-
-## 主要な登場人物
-- 
-
-## ストーリーライン
-
-### 序盤（導入）
-- 
-
-### 中盤（展開）
-- 
-
-### 終盤（結末）
-- 
-
-## 重要なシーン
-1. 
-2. 
-3. 
-
-## 伏線・謎
-- 
-
-## 解決すべき課題
-- 
-""",
-    "worldbuilding.md": """# 世界観設定
-
-## 世界の基本設定
-- 時代・時期: 
-- 場所・地域: 
-- 技術レベル: 
-- 魔法・特殊能力: 
-
-## 社会・文化
-- 政治体制: 
-- 経済システム: 
-- 宗教・信仰: 
-- 言語・方言: 
-
-## 地理
-- 主要な場所: 
-- 気候: 
-- 地形の特徴: 
-
-## 歴史
-- 重要な歴史的出来事: 
-
-## ルール・制約
-- この世界独自のルール: 
-- タブー: 
-
-## その他
-- 
-""",
-    "timeline.md": """# タイムライン
-
-## 物語開始前
-- 
-
-## 第1章
-- 
-
-## 第2章
-- 
-
-## 第3章
-- 
-
-## メモ
-- 
-"""
-}
-
+# --- ファイル管理API ---
 
 @app.route('/')
 def index():
-    """メインページ"""
     return render_template('index.html')
 
-
 @app.route('/api/projects', methods=['GET'])
-def get_projects():
-    """プロジェクト一覧を取得"""
+def list_projects():
     projects = []
-    for project_dir in PROJECTS_DIR.iterdir():
-        if project_dir.is_dir():
-            projects.append({
-                'name': project_dir.name,
-                'path': str(project_dir)
-            })
+    for name in os.listdir(BASE_DIR):
+        if os.path.isdir(os.path.join(BASE_DIR, name)):
+            projects.append(name)
     return jsonify(projects)
-
 
 @app.route('/api/projects', methods=['POST'])
 def create_project():
-    """新規プロジェクトを作成"""
     data = request.json
-    project_name = data.get('name')
-    
-    if not project_name:
+    name = data.get('name', '').strip()
+    if not name:
         return jsonify({'error': 'プロジェクト名が必要です'}), 400
     
-    project_path = PROJECTS_DIR / project_name
+    project_dir = os.path.join(BASE_DIR, name)
+    os.makedirs(project_dir, exist_ok=True)
     
-    if project_path.exists():
-        return jsonify({'error': 'プロジェクトは既に存在します'}), 400
+    # デフォルトファイルを作成
+    defaults = {
+        'character.md': '# キャラクター設定\n\n## 主人公\n\n- 名前：\n- 年齢：\n- 外見：\n- 性格：\n- 背景：\n',
+        'plot.md': '# プロット\n\n## あらすじ\n\n## 第一章\n\n## 第二章\n\n## 結末\n',
+    }
+    for filename, content in defaults.items():
+        filepath = os.path.join(project_dir, filename)
+        if not os.path.exists(filepath):
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(content)
     
-    # プロジェクトディレクトリ作成
-    project_path.mkdir()
-    
-    # テンプレートファイル作成
-    for filename, content in TEMPLATES.items():
-        (project_path / filename).write_text(content, encoding='utf-8')
-    
-    # 第1章のファイルを作成
-    (project_path / "chapter01.md").write_text("# 第1章\n\n", encoding='utf-8')
-    
-    return jsonify({
-        'message': 'プロジェクトを作成しました',
-        'name': project_name
-    })
+    return jsonify({'name': name})
 
-
-@app.route('/api/projects/<project_name>/files', methods=['GET'])
-def get_files(project_name):
-    """プロジェクト内のファイル一覧を取得"""
-    project_path = PROJECTS_DIR / project_name
-    
-    if not project_path.exists():
+@app.route('/api/projects/<project>/files', methods=['GET'])
+def list_files(project):
+    project_dir = os.path.join(BASE_DIR, project)
+    if not os.path.exists(project_dir):
         return jsonify({'error': 'プロジェクトが見つかりません'}), 404
     
     files = []
-    for file_path in sorted(project_path.glob('*.md')):
-        files.append({
-            'name': file_path.name,
-            'path': str(file_path.relative_to(PROJECTS_DIR))
-        })
-    
+    for name in sorted(os.listdir(project_dir)):
+        if name.endswith('.md'):
+            files.append(name)
     return jsonify(files)
 
-
-@app.route('/api/files/<path:file_path>', methods=['GET'])
-def get_file(file_path):
-    """ファイル内容を取得"""
-    full_path = PROJECTS_DIR / file_path
-    
-    if not full_path.exists():
+@app.route('/api/projects/<project>/files/<filename>', methods=['GET'])
+def get_file(project, filename):
+    filepath = os.path.join(BASE_DIR, project, filename)
+    if not os.path.exists(filepath):
         return jsonify({'error': 'ファイルが見つかりません'}), 404
     
-    content = full_path.read_text(encoding='utf-8')
-    return jsonify({
-        'content': content,
-        'path': file_path
-    })
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    return jsonify({'content': content})
 
-
-@app.route('/api/files/<path:file_path>', methods=['PUT'])
-def save_file(file_path):
-    """ファイルを保存"""
+@app.route('/api/projects/<project>/files/<filename>', methods=['PUT'])
+def save_file(project, filename):
+    filepath = os.path.join(BASE_DIR, project, filename)
     data = request.json
     content = data.get('content', '')
     
-    full_path = PROJECTS_DIR / file_path
-    
-    # ディレクトリが存在しない場合は作成
-    full_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    full_path.write_text(content, encoding='utf-8')
-    
-    return jsonify({'message': '保存しました'})
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(content)
+    return jsonify({'success': True})
 
+@app.route('/api/projects/<project>/files/<filename>', methods=['POST'])
+def create_file(project, filename):
+    """新規ファイルを作成（既存の場合はそのまま返す）"""
+    project_dir = os.path.join(BASE_DIR, project)
+    os.makedirs(project_dir, exist_ok=True)
+    filepath = os.path.join(BASE_DIR, project, filename)
+    
+    created = False
+    if not os.path.exists(filepath):
+        # ファイル名に応じたテンプレートを使用
+        template = get_template(filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(template)
+        created = True
+    
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    return jsonify({'content': content, 'created': created})
+
+def get_template(filename):
+    """ファイル名に応じたテンプレートを返す"""
+    templates = {
+        'timeline.md': (
+            '# タイムライン\n\n'
+            '## 物語前史\n\n'
+            '- \n\n'
+            '## 第一幕\n\n'
+            '| 時期 | 出来事 | 関連キャラクター |\n'
+            '|------|--------|------------------|\n'
+            '|      |        |                  |\n\n'
+            '## 第二幕\n\n'
+            '| 時期 | 出来事 | 関連キャラクター |\n'
+            '|------|--------|------------------|\n'
+            '|      |        |                  |\n\n'
+            '## 第三幕\n\n'
+            '| 時期 | 出来事 | 関連キャラクター |\n'
+            '|------|--------|------------------|\n'
+            '|      |        |                  |\n\n'
+            '## 伏線メモ\n\n'
+            '- \n'
+        ),
+        'worldbuilding.md': (
+            '# 世界観設定\n\n'
+            '## 基本設定\n\n'
+            '- 時代・時期：\n'
+            '- 舞台：\n'
+            '- 技術レベル：\n\n'
+            '## 社会・文化\n\n'
+            '### 政治体制\n\n\n'
+            '### 文化・風習\n\n\n'
+            '## 地理\n\n'
+            '### 主要な場所\n\n\n'
+            '## 歴史\n\n'
+            '### 重要な出来事\n\n\n'
+            '## 特殊なルール・法則\n\n'
+            '### 魔法・能力（該当する場合）\n\n\n'
+            '### その他のルール\n\n\n'
+            '## 経済・産業\n\n\n'
+            '## 宗教・信仰\n\n'
+        ),
+        'character.md': (
+            '# キャラクター設定\n\n'
+            '## 主人公\n\n'
+            '- 名前：\n- 年齢：\n- 外見：\n- 性格：\n- 背景：\n\n'
+            '## サブキャラクター\n\n'
+        ),
+        'plot.md': (
+            '# プロット\n\n'
+            '## あらすじ\n\n\n'
+            '## 第一章\n\n\n'
+            '## 第二章\n\n\n'
+            '## 結末\n\n'
+        ),
+    }
+    return templates.get(filename, f'# {filename.replace(".md", "")}\n\n')
+
+# --- プロジェクトコンテキスト取得 ---
+
+def get_project_context(project):
+    """プロジェクト内の主要ファイルを読み込んでコンテキストを作成"""
+    project_dir = os.path.join(BASE_DIR, project)
+    context = {}
+    for fname in ['character.md', 'plot.md', 'worldbuilding.md', 'timeline.md']:
+        fpath = os.path.join(project_dir, fname)
+        if os.path.exists(fpath):
+            with open(fpath, 'r', encoding='utf-8') as f:
+                context[fname] = f.read()
+    return context
+
+# --- Claude API ---
 
 @app.route('/api/claude/generate', methods=['POST'])
-def claude_generate():
-    """Claude APIを使用してコンテンツを生成"""
+def generate():
     data = request.json
-    prompt_type = data.get('type')
-    context = data.get('context', '')
-    project_name = data.get('project')
+    action = data.get('action')
+    project = data.get('project', '')
+    current_content = data.get('current_content', '')
+    extra_context = data.get('context', '')
     
-    # プロジェクトの関連ファイルを読み込む
-    project_context = ""
-    if project_name:
-        project_path = PROJECTS_DIR / project_name
-        if project_path.exists():
-            # character.md, plot.md, worldbuilding.mdを読み込む
-            for context_file in ['character.md', 'plot.md', 'worldbuilding.md']:
-                file_path = project_path / context_file
-                if file_path.exists():
-                    content = file_path.read_text(encoding='utf-8')
-                    project_context += f"\n\n## {context_file}の内容:\n{content}"
+    project_context = get_project_context(project) if project else {}
     
-    # プロンプトを生成
+    ctx_text = '\n\n'.join(
+        f'## {k}\n{v}' for k, v in project_context.items()
+    )
+    
     prompts = {
-        'character': f"""以下のプロジェクト設定を参考に、魅力的なキャラクターを提案してください。
+        'generate_character': f"""以下のプロジェクト設定を参考に、詳細なキャラクタープロファイルを提案してください。
 
-{project_context}
+{ctx_text}
 
-ユーザーの要望:
-{context}
+追加の要望: {extra_context}
 
-キャラクター設定のテンプレートに従って、詳細なプロフィールを作成してください。
-既存のキャラクターや世界観との整合性を保ちながら、独自性のあるキャラクターにしてください。""",
-        
-        'plot': f"""以下のプロジェクト設定を参考に、ストーリーの展開案を提案してください。
+以下を含む詳細なキャラクタープロファイルを作成してください：
+- 基本情報（名前、年齢、外見）
+- 性格と価値観
+- 背景・過去
+- 動機と目標
+- 他キャラクターとの関係
+- 特技・能力
+- セリフ例""",
 
-{project_context}
+        'plot_development': f"""以下のプロジェクト設定を参考に、プロット展開案を提案してください。
 
-現在の状況:
-{context}
+{ctx_text}
 
-3つの異なる展開パターンを提示してください。それぞれの展開の利点と、物語への影響も説明してください。""",
-        
-        'improve': f"""以下のテキストを改善してください。
+現在の内容:
+{current_content}
 
-{context}
+追加の要望: {extra_context}
 
-より読みやすく、魅力的な文章にしてください。改善のポイントも説明してください。""",
-        
-        'consistency': f"""以下のプロジェクト設定に矛盾や問題がないかチェックしてください。
+以下を含むプロット展開を提案してください：
+- 次の展開案（複数）
+- 伏線の提案
+- クライマックスへの道筋
+- 読者を引きつけるポイント""",
 
-{project_context}
+        'generate_timeline': f"""以下のプロジェクト設定を参考に、詳細な物語タイムラインを作成してください。
 
-追加の確認内容:
-{context}
+{ctx_text}
 
-矛盾点、不明瞭な点、改善すべき点を指摘してください。""",
-        
-        'dialogue': f"""以下の設定に基づいて、キャラクター同士の対話を生成してください。
+追加の要望: {extra_context}
 
-{project_context}
+以下を含むタイムラインを作成してください：
+- 物語前史（重要な背景事件）
+- 各幕・章の主要イベント
+- キャラクターの成長段階
+- 伏線の配置と回収タイミング
+- 時系列表（マークダウン表形式で）""",
 
-シチュエーション:
-{context}
+        'generate_worldbuilding': f"""以下のプロジェクト設定を参考に、詳細な世界観設定を作成してください。
 
-各キャラクターの性格や口調を反映した自然な会話を作成してください。"""
+{ctx_text}
+
+追加の要望: {extra_context}
+
+以下の要素を含む世界観を構築してください：
+- 世界の基本設定（時代、場所、技術レベル）
+- 社会・文化・政治体制
+- 地理的特徴と主要な場所
+- 歴史的背景
+- 独自のルールや法則
+- 魔法や特殊能力（該当する場合）
+- 宗教・信仰体系
+- 経済システム""",
+
+        'refine_text': f"""以下の文章を推敲してください。
+
+{current_content}
+
+追加の指示: {extra_context}
+
+改善案を提示してください。元の文章の雰囲気は保ちつつ、より魅力的な表現にしてください。""",
+
+        'consistency_check': f"""以下のプロジェクト設定の整合性をチェックしてください。
+
+{ctx_text}
+
+矛盾点、設定の穴、改善すべき点を指摘してください。""",
+
+        'dialogue_simulation': f"""以下のキャラクター設定を参考に、指定されたシーンの対話を生成してください。
+
+{ctx_text}
+
+シーン・状況: {extra_context}
+
+自然で、各キャラクターの個性が出た対話を書いてください。""",
     }
     
-    if prompt_type not in prompts:
-        return jsonify({'error': '無効なリクエストタイプです'}), 400
+    prompt = prompts.get(action, extra_context)
+    if not prompt:
+        return jsonify({'error': '不明なアクション'}), 400
     
-    try:
-        # Claude APIを呼び出し
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=2000,
-            messages=[
-                {"role": "user", "content": prompts[prompt_type]}
-            ]
-        )
-        
-        response_text = message.content[0].text
-        
-        return jsonify({
-            'response': response_text
-        })
+    message = client.messages.create(
+        model='claude-opus-4-5',
+        max_tokens=2000,
+        messages=[{'role': 'user', 'content': prompt}]
+    )
     
-    except Exception as e:
-        return jsonify({'error': f'API呼び出しエラー: {str(e)}'}), 500
-
-
-@app.route('/api/claude/stream', methods=['POST'])
-def claude_stream():
-    """Claude APIをストリーミングで呼び出し（サーバーサイドイベント）"""
-    data = request.json
-    prompt = data.get('prompt', '')
-    
-    def generate():
-        try:
-            with client.messages.stream(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            ) as stream:
-                for text in stream.text_stream:
-                    yield f"data: {json.dumps({'text': text})}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-    
-    return app.response_class(generate(), mimetype='text/event-stream')
-
+    return jsonify({'result': message.content[0].text})
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

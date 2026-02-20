@@ -1,359 +1,228 @@
-// グローバル変数
-let currentProject = null;
-let currentFile = null;
-let currentFilePath = null;
-let autoSaveTimeout = null;
-let claudeResponse = '';
+let editor = null;
+let currentProject = '';
+let currentFile = '';
+let selectedAction = '';
+let claudeResult = '';
 
-// DOM要素
-const projectSelect = document.getElementById('projectSelect');
-const fileList = document.getElementById('fileList');
-const editor = document.getElementById('editor');
-const preview = document.getElementById('preview');
-const saveBtn = document.getElementById('saveBtn');
-const currentFileName = document.getElementById('currentFileName');
-const newProjectBtn = document.getElementById('newProjectBtn');
-const newProjectModal = document.getElementById('newProjectModal');
-const projectNameInput = document.getElementById('projectNameInput');
-const createProjectBtn = document.getElementById('createProjectBtn');
-const cancelProjectBtn = document.getElementById('cancelProjectBtn');
-const claudeContext = document.getElementById('claudeContext');
-const claudeResponseDiv = document.getElementById('claudeResponse');
-const responseContent = document.getElementById('responseContent');
-const insertBtn = document.getElementById('insertBtn');
+// ---- 初期化 ----
+window.addEventListener('DOMContentLoaded', () => {
+  editor = CodeMirror.fromTextArea(document.getElementById('editor'), {
+    mode: 'markdown',
+    theme: 'default',
+    lineNumbers: true,
+    lineWrapping: true,
+    autofocus: false,
+  });
 
-// 初期化
-document.addEventListener('DOMContentLoaded', () => {
-    loadProjects();
-    setupEventListeners();
+  editor.on('change', () => {
+    updatePreview();
+  });
+
+  loadProjects();
 });
 
-// イベントリスナー設定
-function setupEventListeners() {
-    // プロジェクト選択
-    projectSelect.addEventListener('change', (e) => {
-        currentProject = e.target.value;
-        if (currentProject) {
-            loadFiles(currentProject);
-        } else {
-            fileList.innerHTML = '';
-            clearEditor();
-        }
-    });
-    
-    // エディタ入力時
-    editor.addEventListener('input', () => {
-        updatePreview();
-        enableSaveButton();
-        scheduleAutoSave();
-    });
-    
-    // 保存ボタン
-    saveBtn.addEventListener('click', saveCurrentFile);
-    
-    // 新規プロジェクトボタン
-    newProjectBtn.addEventListener('click', () => {
-        newProjectModal.classList.add('show');
-        projectNameInput.focus();
-    });
-    
-    // プロジェクト作成ボタン
-    createProjectBtn.addEventListener('click', createProject);
-    
-    // キャンセルボタン
-    cancelProjectBtn.addEventListener('click', () => {
-        newProjectModal.classList.remove('show');
-        projectNameInput.value = '';
-    });
-    
-    // Enterキーでプロジェクト作成
-    projectNameInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            createProject();
-        }
-    });
-    
-    // Claudeボタン
-    document.querySelectorAll('.btn-claude').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const type = e.target.dataset.type;
-            callClaude(type);
-        });
-    });
-    
-    // 挿入ボタン
-    insertBtn.addEventListener('click', () => {
-        insertClaudeResponse();
-    });
-}
-
-// プロジェクト一覧を読み込む
-async function loadProjects() {
-    try {
-        const response = await fetch('/api/projects');
-        const projects = await response.json();
-        
-        projectSelect.innerHTML = '<option value="">プロジェクトを選択...</option>';
-        
-        projects.forEach(project => {
-            const option = document.createElement('option');
-            option.value = project.name;
-            option.textContent = project.name;
-            projectSelect.appendChild(option);
-        });
-    } catch (error) {
-        console.error('プロジェクトの読み込みエラー:', error);
-        alert('プロジェクトの読み込みに失敗しました');
-    }
-}
-
-// ファイル一覧を読み込む
-async function loadFiles(projectName) {
-    try {
-        const response = await fetch(`/api/projects/${projectName}/files`);
-        const files = await response.json();
-        
-        fileList.innerHTML = '';
-        
-        files.forEach(file => {
-            const fileItem = document.createElement('div');
-            fileItem.className = 'file-item';
-            fileItem.textContent = file.name;
-            fileItem.dataset.path = file.path;
-            
-            fileItem.addEventListener('click', () => {
-                loadFile(file.path);
-                
-                // アクティブ状態を更新
-                document.querySelectorAll('.file-item').forEach(item => {
-                    item.classList.remove('active');
-                });
-                fileItem.classList.add('active');
-            });
-            
-            fileList.appendChild(fileItem);
-        });
-    } catch (error) {
-        console.error('ファイル一覧の読み込みエラー:', error);
-        alert('ファイル一覧の読み込みに失敗しました');
-    }
-}
-
-// ファイルを読み込む
-async function loadFile(filePath) {
-    try {
-        const response = await fetch(`/api/files/${filePath}`);
-        const data = await response.json();
-        
-        currentFilePath = data.path;
-        currentFile = data.content;
-        editor.value = data.content;
-        currentFileName.textContent = filePath.split('/').pop();
-        
-        updatePreview();
-        saveBtn.disabled = true;
-    } catch (error) {
-        console.error('ファイルの読み込みエラー:', error);
-        alert('ファイルの読み込みに失敗しました');
-    }
-}
-
-// ファイルを保存
-async function saveCurrentFile() {
-    if (!currentFilePath) return;
-    
-    try {
-        const response = await fetch(`/api/files/${currentFilePath}`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                content: editor.value
-            })
-        });
-        
-        const data = await response.json();
-        
-        if (response.ok) {
-            saveBtn.disabled = true;
-            showNotification('保存しました');
-        } else {
-            alert('保存に失敗しました: ' + data.error);
-        }
-    } catch (error) {
-        console.error('保存エラー:', error);
-        alert('保存に失敗しました');
-    }
-}
-
-// プレビューを更新
 function updatePreview() {
-    const markdown = editor.value;
-    preview.innerHTML = marked.parse(markdown);
+  const md = editor.getValue();
+  document.getElementById('preview').innerHTML = marked.parse(md);
 }
 
-// 保存ボタンを有効化
-function enableSaveButton() {
-    if (currentFilePath) {
-        saveBtn.disabled = false;
-    }
+// ---- トースト通知 ----
+function showToast(msg, color = '#1a5aa0') {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.style.background = color;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2500);
 }
 
-// 自動保存をスケジュール
-function scheduleAutoSave() {
-    if (autoSaveTimeout) {
-        clearTimeout(autoSaveTimeout);
-    }
-    
-    autoSaveTimeout = setTimeout(() => {
-        if (!saveBtn.disabled && currentFilePath) {
-            saveCurrentFile();
-        }
-    }, 3000); // 3秒後に自動保存
+// ---- プロジェクト ----
+async function loadProjects() {
+  const res = await fetch('/api/projects');
+  const projects = await res.json();
+  const sel = document.getElementById('project-select');
+  sel.innerHTML = '<option value="">-- プロジェクトを選択 --</option>';
+  projects.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = p;
+    sel.appendChild(opt);
+  });
 }
 
-// エディタをクリア
-function clearEditor() {
-    editor.value = '';
-    preview.innerHTML = '';
-    currentFileName.textContent = 'ファイルを選択してください';
-    currentFilePath = null;
-    saveBtn.disabled = true;
-}
-
-// 新規プロジェクトを作成
 async function createProject() {
-    const name = projectNameInput.value.trim();
-    
-    if (!name) {
-        alert('プロジェクト名を入力してください');
-        return;
-    }
-    
-    try {
-        const response = await fetch('/api/projects', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ name })
-        });
-        
-        const data = await response.json();
-        
-        if (response.ok) {
-            newProjectModal.classList.remove('show');
-            projectNameInput.value = '';
-            
-            // プロジェクト一覧を再読み込み
-            await loadProjects();
-            
-            // 作成したプロジェクトを選択
-            projectSelect.value = name;
-            currentProject = name;
-            loadFiles(name);
-            
-            showNotification('プロジェクトを作成しました');
-        } else {
-            alert('作成に失敗しました: ' + data.error);
-        }
-    } catch (error) {
-        console.error('プロジェクト作成エラー:', error);
-        alert('プロジェクトの作成に失敗しました');
-    }
+  const name = document.getElementById('new-project-name').value.trim();
+  if (!name) { showToast('プロジェクト名を入力してください', '#a03020'); return; }
+  const res = await fetch('/api/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  if (res.ok) {
+    document.getElementById('new-project-name').value = '';
+    await loadProjects();
+    document.getElementById('project-select').value = name;
+    await loadProject(name);
+    showToast(`プロジェクト「${name}」を作成しました`);
+  }
 }
 
-// Claudeを呼び出す
-async function callClaude(type) {
-    const context = claudeContext.value.trim();
-    
-    if (!currentProject) {
-        alert('プロジェクトを選択してください');
-        return;
-    }
-    
-    // ボタンを無効化
-    const buttons = document.querySelectorAll('.btn-claude');
-    buttons.forEach(btn => {
-        btn.disabled = true;
-        btn.textContent = '処理中...';
-    });
-    
-    try {
-        const response = await fetch('/api/claude/generate', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                type: type,
-                context: context || editor.value,
-                project: currentProject
-            })
-        });
-        
-        const data = await response.json();
-        
-        if (response.ok) {
-            claudeResponse = data.response;
-            responseContent.textContent = data.response;
-            claudeResponseDiv.style.display = 'block';
-            
-            // スクロール
-            claudeResponseDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        } else {
-            alert('エラー: ' + data.error);
-        }
-    } catch (error) {
-        console.error('Claude API呼び出しエラー:', error);
-        alert('Claudeの呼び出しに失敗しました');
-    } finally {
-        // ボタンを再有効化
-        buttons.forEach(btn => {
-            btn.disabled = false;
-            // 元のテキストに戻す
-            const type = btn.dataset.type;
-            const labels = {
-                'character': 'キャラクター生成',
-                'plot': 'プロット展開案',
-                'improve': '文章推敲',
-                'consistency': '整合性チェック',
-                'dialogue': '対話シミュレーション'
-            };
-            btn.textContent = labels[type];
-        });
-    }
+async function loadProject(name) {
+  if (!name) return;
+  currentProject = name;
+  currentFile = '';
+  document.getElementById('current-file-label').textContent = 'ファイルを選択してください';
+  document.getElementById('save-btn').disabled = true;
+  editor.setValue('');
+  updatePreview();
+  await loadFiles();
 }
 
-// Claudeの回答をエディタに挿入
-function insertClaudeResponse() {
-    if (!claudeResponse) return;
-    
-    const cursorPos = editor.selectionStart;
-    const textBefore = editor.value.substring(0, cursorPos);
-    const textAfter = editor.value.substring(editor.selectionEnd);
-    
-    editor.value = textBefore + '\n\n' + claudeResponse + '\n\n' + textAfter;
-    
-    updatePreview();
-    enableSaveButton();
-    
-    // カーソル位置を調整
-    const newCursorPos = cursorPos + claudeResponse.length + 4;
-    editor.setSelectionRange(newCursorPos, newCursorPos);
-    editor.focus();
-    
-    showNotification('挿入しました');
+// ---- ファイル一覧 ----
+async function loadFiles() {
+  if (!currentProject) return;
+  const res = await fetch(`/api/projects/${currentProject}/files`);
+  const files = await res.json();
+  const list = document.getElementById('file-list');
+  list.innerHTML = '';
+  files.forEach(f => {
+    const li = document.createElement('li');
+    li.textContent = f;
+    li.onclick = () => openFile(f);
+    li.dataset.name = f;
+    list.appendChild(li);
+  });
 }
 
-// 通知を表示（簡易版）
-function showNotification(message) {
-    // 簡易的な通知実装
-    const originalText = saveBtn.textContent;
-    saveBtn.textContent = '✓ ' + message;
-    
-    setTimeout(() => {
-        saveBtn.textContent = originalText;
-    }, 2000);
+// ---- ★ クイック作成ボタン（timeline.md / worldbuilding.md など） ----
+async function quickCreateFile(filename) {
+  if (!currentProject) {
+    showToast('先にプロジェクトを選択してください', '#a06020');
+    return;
+  }
+  const res = await fetch(`/api/projects/${currentProject}/files/${filename}`, {
+    method: 'POST',
+  });
+  if (res.ok) {
+    const data = await res.json();
+    if (data.created) {
+      showToast(`${filename} を作成しました ✅`, '#1a7a40');
+    } else {
+      showToast(`${filename} を開きました`);
+    }
+    await loadFiles();
+    await openFile(filename);
+  }
+}
+
+// ---- カスタムファイル作成 ----
+async function createCustomFile() {
+  if (!currentProject) {
+    showToast('先にプロジェクトを選択してください', '#a06020');
+    return;
+  }
+  let name = document.getElementById('new-file-name').value.trim();
+  if (!name) { showToast('ファイル名を入力してください', '#a03020'); return; }
+  if (!name.endsWith('.md')) name += '.md';
+
+  const res = await fetch(`/api/projects/${currentProject}/files/${name}`, {
+    method: 'POST',
+  });
+  if (res.ok) {
+    document.getElementById('new-file-name').value = '';
+    await loadFiles();
+    await openFile(name);
+    showToast(`${name} を作成しました`);
+  }
+}
+
+// ---- ファイルを開く ----
+async function openFile(filename) {
+  if (!currentProject) return;
+  const res = await fetch(`/api/projects/${currentProject}/files/${filename}`);
+  if (!res.ok) { showToast('ファイルを開けませんでした', '#a03020'); return; }
+  const data = await res.json();
+  currentFile = filename;
+  editor.setValue(data.content);
+  updatePreview();
+  document.getElementById('current-file-label').textContent = `✏️ ${filename}`;
+  document.getElementById('save-btn').disabled = false;
+
+  // アクティブ表示
+  document.querySelectorAll('#file-list li').forEach(li => {
+    li.classList.toggle('active', li.dataset.name === filename);
+  });
+}
+
+// ---- ファイル保存 ----
+async function saveFile() {
+  if (!currentProject || !currentFile) return;
+  const content = editor.getValue();
+  const res = await fetch(`/api/projects/${currentProject}/files/${currentFile}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content })
+  });
+  if (res.ok) {
+    showToast('💾 保存しました');
+  }
+}
+
+// Ctrl+S で保存
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    saveFile();
+  }
+});
+
+// ---- Claude連携 ----
+function claudeAction(action) {
+  selectedAction = action;
+  document.querySelectorAll('.claude-btn').forEach(btn => btn.classList.remove('selected'));
+  event.target.classList.add('selected');
+  document.getElementById('claude-run-btn').disabled = !currentProject;
+}
+
+async function runClaudeAction() {
+  if (!selectedAction || !currentProject) return;
+
+  const btn = document.getElementById('claude-run-btn');
+  btn.disabled = true;
+  btn.textContent = '生成中…';
+
+  const context = document.getElementById('claude-context').value;
+  const currentContent = editor.getValue();
+
+  const res = await fetch('/api/claude/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: selectedAction,
+      project: currentProject,
+      current_content: currentContent,
+      context
+    })
+  });
+
+  btn.disabled = false;
+  btn.textContent = '実行';
+
+  if (res.ok) {
+    const data = await res.json();
+    claudeResult = data.result;
+    const resultEl = document.getElementById('claude-result');
+    resultEl.style.display = 'block';
+    resultEl.textContent = claudeResult;
+    document.getElementById('insert-result-btn').style.display = 'inline-block';
+  } else {
+    showToast('Claude APIエラーが発生しました', '#a03020');
+  }
+}
+
+function insertResult() {
+  if (!claudeResult) return;
+  const current = editor.getValue();
+  editor.setValue(current + '\n\n' + claudeResult);
+  updatePreview();
+  showToast('エディタに挿入しました ✅', '#1a7a40');
 }
