@@ -175,6 +175,104 @@ document.addEventListener('keydown', e => {
   }
 });
 
+// ---- ★ plot.md → chapter ファイル生成 ----
+async function generateChapters() {
+  if (!currentProject) {
+    showToast('先にプロジェクトを選択してください', '#a06020');
+    return;
+  }
+
+  const btn = document.getElementById('plot-to-chapters-btn');
+  const progressWrap = document.getElementById('chapter-progress');
+  const progressBar = document.getElementById('chapter-progress-bar');
+  const progressLabel = document.getElementById('chapter-progress-label');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ 生成中…';
+  progressWrap.style.display = 'block';
+  progressBar.style.width = '10%';
+  progressLabel.textContent = 'plot.md を解析中…';
+
+  try {
+    const res = await fetch('/api/claude/generate_chapters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: currentProject })
+    });
+
+    progressBar.style.width = '90%';
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      return;
+    }
+
+    progressBar.style.width = '100%';
+    const count = data.count;
+    const names = data.created.map(c => c.filename).join('、');
+    progressLabel.textContent = `${count} ファイル生成完了`;
+
+    // ファイルリストを更新して最初の chapter を開く
+    await loadFiles();
+    if (data.created.length > 0) {
+      await openFile(data.created[0].filename);
+    }
+
+    showToast(`📝 ${names} を生成しました ✅`, '#1a7a40');
+
+    // 3秒後にプログレスを非表示
+    setTimeout(() => {
+      progressWrap.style.display = 'none';
+      progressBar.style.width = '0%';
+    }, 3000);
+
+  } catch (e) {
+    showToast('通信エラーが発生しました', '#c0392b');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '📝 plot.md → chapters';
+  }
+}
+
+// ---- ★ draft → plot.md 生成 ----
+async function generatePlotFromDraft() {
+  if (!currentProject) {
+    showToast('先にプロジェクトを選択してください', '#a06020');
+    return;
+  }
+
+  const btn = document.getElementById('draft-to-plot-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 生成中…';
+
+  try {
+    const res = await fetch('/api/claude/draft_to_plot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: currentProject })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      return;
+    }
+
+    // ファイルリストを更新して plot.md を開く
+    await loadFiles();
+    await openFile('plot.md');
+    showToast('plot.md を生成・保存しました ✅', '#1a7a40');
+
+  } catch (e) {
+    showToast('通信エラーが発生しました', '#c0392b');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✍️ draft → plot.md';
+  }
+}
+
 // ---- Claude連携 ----
 function claudeAction(action) {
   selectedAction = action;

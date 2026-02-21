@@ -371,3 +371,108 @@ body {
   box-shadow: 0 4px 16px rgba(58,106,212,0.3);
 }
 #toast.show { opacity: 1; }
+
+/* ---- ★ draft → plot.md ボタン ---- */
+#draft-to-plot-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+#draft-to-plot-btn {
+  width: 100%;
+  padding: 9px 12px;
+  background: #fff5fb;
+  border: 1.5px solid #e0a0d0;
+  border-radius: 8px;
+  color: #9a2070;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.01em;
+}
+#draft-to-plot-btn:hover:not(:disabled) {
+  background: #ffe0f4;
+  border-color: #c060a0;
+  transform: translateX(2px);
+}
+#draft-to-plot-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  transform: none;
+}
+
+.draft-hint {
+  font-size: 11px;
+  color: #c0a0b8;
+  line-height: 1.4;
+  padding-left: 2px;
+}
+
+/* ---- ★ plot.md → chapters ボタン ---- */
+#plot-to-chapters-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+#plot-to-chapters-btn {
+  width: 100%;
+  padding: 9px 12px;
+  background: #f0f8ff;
+  border: 1.5px solid #90c0e8;
+  border-radius: 8px;
+  color: #1a5a90;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.01em;
+}
+#plot-to-chapters-btn:hover:not(:disabled) {
+  background: #d8eeff;
+  border-color: #4a90c8;
+  transform: translateX(2px);
+}
+#plot-to-chapters-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  transform: none;
+}
+
+/* プログレスバー */
+#chapter-progress {
+  margin-top: 4px;
+}
+
+#chapter-progress-bar-wrap {
+  width: 100%;
+  height: 5px;
+  background: #e0eaf4;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+#chapter-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #4a90c8, #7ab8e8);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+#chapter-progress-label {
+  font-size: 11px;
+  color: #6090b8;
+  margin-top: 4px;
+  text-align: center;
+}

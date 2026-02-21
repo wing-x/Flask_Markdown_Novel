@@ -32,7 +32,7 @@
       <div id="file-section">
         <h2>📄 ファイル</h2>
 
-        <!-- ★ timeline.md / worldbuilding.md 作成ボタン -->
+        <!-- ファイル作成ボタン -->
         <div id="quick-create-buttons">
           <p class="section-label">ファイルを作成</p>
           <button class="quick-create-btn" onclick="quickCreateFile('timeline.md')" title="タイムラインファイルを作成">
@@ -47,6 +47,30 @@
           <button class="quick-create-btn" onclick="quickCreateFile('plot.md')" title="プロットファイルを作成">
             📖 plot.md
           </button>
+        </div>
+
+        <!-- ★ draft → plot.md 生成ボタン -->
+        <div id="draft-to-plot-section">
+          <p class="section-label">草稿から生成</p>
+          <button id="draft-to-plot-btn" onclick="generatePlotFromDraft()" title="plot_draft.md の内容を元に plot.md を生成します">
+            ✍️ draft → plot.md
+          </button>
+          <p class="draft-hint">plot_draft.md を用意してから実行してください</p>
+        </div>
+
+        <!-- ★ plot.md → chapter ファイル生成ボタン -->
+        <div id="plot-to-chapters-section">
+          <p class="section-label">本編を生成</p>
+          <button id="plot-to-chapters-btn" onclick="generateChapters()" title="plot.md の各章から chapter01.md, chapter02.md ... を生成します">
+            📝 plot.md → chapters
+          </button>
+          <p class="draft-hint">plot.md の章数に応じて chapter ファイルを分割作成します</p>
+          <div id="chapter-progress" style="display:none">
+            <div id="chapter-progress-bar-wrap">
+              <div id="chapter-progress-bar"></div>
+            </div>
+            <p id="chapter-progress-label"></p>
+          </div>
         </div>
 
         <div id="custom-file-controls">

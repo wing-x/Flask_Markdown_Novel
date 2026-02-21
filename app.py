@@ -172,6 +172,204 @@ def get_project_context(project):
 
 # --- Claude API ---
 
+PLOT_TEMPLATE = """# プロット
+
+## あらすじ
+
+
+## 第一章
+
+
+## 第二章
+
+
+## 結末
+"""
+
+@app.route('/api/claude/draft_to_plot', methods=['POST'])
+def draft_to_plot():
+    """plot_draft.md の内容を読み込み、テンプレートに沿った plot.md を生成・保存する"""
+    data = request.json
+    project = data.get('project', '')
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    project_dir = os.path.join(BASE_DIR, project)
+
+    # plot_draft.md を読み込む
+    draft_path = os.path.join(project_dir, 'plot_draft.md')
+    if not os.path.exists(draft_path):
+        return jsonify({'error': 'plot_draft.md がプロジェクト内に見つかりません'}), 404
+
+    with open(draft_path, 'r', encoding='utf-8') as f:
+        draft_content = f.read().strip()
+
+    if not draft_content or draft_content == '# plot_draft':
+        return jsonify({'error': 'plot_draft.md に内容が書かれていません'}), 400
+
+    prompt = f"""以下の「プロット草稿」を読み込み、指定された「出力テンプレート」の各セクションを埋めてください。
+
+## プロット草稿
+{draft_content}
+
+## 出力テンプレート（この構造を厳守し、マークダウン形式で出力すること）
+{PLOT_TEMPLATE}
+
+### 指示
+- テンプレートの見出し（# ## など）はそのまま維持してください
+- 草稿の内容を適切に各セクションへ振り分けてください
+- 草稿に記載のない項目は、文脈から自然に補完してください
+- 出力はテンプレートのマークダウンのみとし、説明文や前置きは一切不要です"""
+
+    message = client.messages.create(
+        model='claude-opus-4-5',
+        max_tokens=2000,
+        messages=[{'role': 'user', 'content': prompt}]
+    )
+
+    generated = message.content[0].text.strip()
+
+    # plot.md として保存
+    plot_path = os.path.join(project_dir, 'plot.md')
+    with open(plot_path, 'w', encoding='utf-8') as f:
+        f.write(generated)
+
+    return jsonify({'content': generated, 'saved': True})
+
+
+@app.route('/api/claude/generate_chapters', methods=['POST'])
+def generate_chapters():
+    """plot.md の各章を解析し、chapter01.md, chapter02.md ... として本文を生成・保存する"""
+    data = request.json
+    project = data.get('project', '')
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    project_dir = os.path.join(BASE_DIR, project)
+
+    # plot.md を読み込む
+    plot_path = os.path.join(project_dir, 'plot.md')
+    if not os.path.exists(plot_path):
+        return jsonify({'error': 'plot.md がプロジェクト内に見つかりません'}), 404
+
+    with open(plot_path, 'r', encoding='utf-8') as f:
+        plot_content = f.read().strip()
+
+    # character.md / worldbuilding.md もコンテキストとして読み込む
+    extra_ctx = {}
+    for fname in ['character.md', 'worldbuilding.md']:
+        fpath = os.path.join(project_dir, fname)
+        if os.path.exists(fpath):
+            with open(fpath, 'r', encoding='utf-8') as f:
+                extra_ctx[fname] = f.read()
+
+    # --- plot.md から章セクションを動的に抽出 ---
+    # 「## 第◯章」の見出しを正規表現で検索（第一章〜第九章、または第1章〜第9章に対応）
+    import re
+
+    KANJI_TO_NUM = {
+        '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+        '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+    }
+
+    # 章見出しパターン：「## 第一章」「## 第1章」などにマッチ
+    chapter_pattern = re.compile(
+        r'^##\s+第([一二三四五六七八九十\d]+)章',
+        re.MULTILINE
+    )
+
+    # plot.md 全体をセクションに分割（## 区切り）
+    section_pattern = re.compile(r'^(##\s+.+)$', re.MULTILINE)
+    section_splits = list(section_pattern.finditer(plot_content))
+
+    chapters = []  # [(filename, title, body, is_ending), ...]
+
+    # 結末見出しパターン：「## 結末」にマッチ
+    ending_pattern = re.compile(r'^##\s+結末', re.MULTILINE)
+
+    for i, match in enumerate(section_splits):
+        heading = match.group(1).strip()
+        body_start = match.end()
+        body_end = section_splits[i + 1].start() if i + 1 < len(section_splits) else len(plot_content)
+        body = plot_content[body_start:body_end].strip()
+
+        # 通常の章（第◯章）
+        ch_match = chapter_pattern.match(heading)
+        if ch_match:
+            num_str = ch_match.group(1)
+            chapter_num = int(num_str) if num_str.isdigit() else KANJI_TO_NUM.get(num_str, 0)
+            filename = f'chapter{chapter_num:02d}.md'
+            chapters.append((filename, heading, body, False))
+            continue
+
+        # 結末セクション
+        if ending_pattern.match(heading):
+            chapters.append(('chapter_end.md', heading, body, True))
+
+    if not chapters:
+        return jsonify({'error': 'plot.md に章（## 第◯章）または結末（## 結末）が見つかりません'}), 400
+
+    # あらすじを取得（コンテキスト補強用）
+    synopsis_match = re.search(r'## あらすじ\n+([\s\S]+?)(?=\n##|$)', plot_content)
+    synopsis = synopsis_match.group(1).strip() if synopsis_match else ''
+
+    # キャラクター情報
+    char_ctx = extra_ctx.get('character.md', '')
+    world_ctx = extra_ctx.get('worldbuilding.md', '')
+
+    created_files = []
+
+    for filename, title, body, is_ending in chapters:
+        if is_ending:
+            section_label = '結末'
+            writing_note = '物語の締めくくりとして、伏線の回収・感情の解放・여韻の残る文章を意識してください'
+        else:
+            section_label = '章'
+            writing_note = '物語の流れを自然につなぎ、読者を次章へ引き込む終わり方を意識してください'
+
+        prompt = f"""あなたは小説の執筆者です。以下のプロット情報をもとに、指定された{section_label}の本文を日本語で執筆してください。
+
+## 物語のあらすじ
+{synopsis}
+
+## キャラクター設定
+{char_ctx if char_ctx else '（未設定）'}
+
+## 世界観設定
+{world_ctx if world_ctx else '（未設定）'}
+
+## 今回執筆する{section_label}
+{title}
+
+## この{section_label}のプロット（箇条書きのあらまし）
+{body}
+
+## 執筆の指示
+- 上記プロットの箇条書きを忠実に本文へ展開してください
+- 情景・心理描写を豊かに盛り込んだ読み応えのある小説文体で書いてください
+- 会話文・地の文を自然に組み合わせてください
+- 分量の目安は2000〜3000字程度です
+- {writing_note}
+- 出力はマークダウン形式で、最初に「# {title.lstrip('# ').strip()}」の見出しを付けてください
+- 前置きや説明文は不要です。本文のみ出力してください"""
+
+        message = client.messages.create(
+            model='claude-opus-4-5',
+            max_tokens=3000,
+            messages=[{'role': 'user', 'content': prompt}]
+        )
+
+        chapter_text = message.content[0].text.strip()
+
+        chapter_path = os.path.join(project_dir, filename)
+        with open(chapter_path, 'w', encoding='utf-8') as f:
+            f.write(chapter_text)
+
+        created_files.append({'filename': filename, 'title': title, 'is_ending': is_ending})
+
+    return jsonify({'created': created_files, 'count': len(created_files)})
+
+
 @app.route('/api/claude/generate', methods=['POST'])
 def generate():
     data = request.json
@@ -274,7 +472,7 @@ def generate():
         return jsonify({'error': '不明なアクション'}), 400
     
     message = client.messages.create(
-        model='claude-opus-4-5',
+        model='claude-sonnet-4-6',
         max_tokens=2000,
         messages=[{'role': 'user', 'content': prompt}]
     )
