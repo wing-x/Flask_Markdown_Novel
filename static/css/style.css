@@ -212,25 +212,40 @@ body {
   display: flex;
   flex: 1;
   overflow: hidden;
+  min-height: 0; /* flex子要素が縮めるよう必須 */
 }
 
-#editor-pane, #preview-pane {
+/* エディタペイン：flex列で CodeMirror を縦いっぱいに伸ばす */
+#editor-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #ffffff;
+  border-right: 1px solid #e2e4ea;
+}
+
+#preview-pane {
   flex: 1;
   overflow: auto;
   background: #ffffff;
 }
 
-#editor-pane { border-right: 1px solid #e2e4ea; }
-
+/* CodeMirror をペインいっぱいに広げる */
 .CodeMirror {
-  height: 100%;
+  flex: 1;          /* flex子要素として縦に伸びる */
+  height: 100%;     /* CodeMirror 内部の計算用にも必要 */
+  min-height: 0;
   font-size: 14px;
   font-family: 'Fira Code', 'Consolas', monospace;
   background: #ffffff;
   color: #2c2c3a;
 }
 
-.CodeMirror-scroll { background: #ffffff; }
+.CodeMirror-scroll {
+  background: #ffffff;
+  height: 100% !important; /* CodeMirror がデフォルトで設定する高さを上書き */
+}
 .CodeMirror-gutters { background: #f8f9fc; border-right: 1px solid #e8eaf0; }
 .CodeMirror-linenumber { color: #c0c4d0; }
 .CodeMirror-cursor { border-left: 2px solid #3a6ad4; }
@@ -263,20 +278,58 @@ body {
 #claude-panel {
   background: #ffffff;
   border-top: 1px solid #e2e4ea;
-  padding: 12px 18px;
   box-shadow: 0 -1px 4px rgba(0,0,0,0.04);
+  flex-shrink: 0;  /* エディタ領域を圧迫しない */
 }
 
-#claude-panel h3 {
+#claude-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 18px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+#claude-panel-header:hover { background: #f8f9fc; }
+
+#claude-panel-header h3 {
   font-size: 12px;
   color: #9090a8;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  margin-bottom: 10px;
+  margin: 0;
 }
 
-#claude-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+#claude-toggle-btn {
+  background: none;
+  border: none;
+  color: #a0a8c0;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.15s, transform 0.2s;
+  line-height: 1;
+}
+#claude-toggle-btn:hover { background: #e8ecf8; }
+#claude-toggle-btn.collapsed { transform: rotate(-90deg); }
+
+#claude-panel-body {
+  padding: 0 18px 12px;
+  overflow: hidden;
+  transition: max-height 0.25s ease, opacity 0.2s ease;
+  max-height: 400px;
+  opacity: 1;
+}
+#claude-panel-body.collapsed {
+  max-height: 0;
+  opacity: 0;
+  padding-bottom: 0;
+}
+
+#claude-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; margin-top: 2px; }
 
 .claude-btn {
   padding: 6px 12px;

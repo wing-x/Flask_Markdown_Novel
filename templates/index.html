@@ -100,7 +100,11 @@
 
       <!-- Claude連携パネル -->
       <div id="claude-panel">
-        <h3>🤖 Claude サポート</h3>
+        <div id="claude-panel-header" onclick="toggleClaudePanel()">
+          <h3>🤖 Claude サポート</h3>
+          <button id="claude-toggle-btn" title="パネルを折りたたむ">▼</button>
+        </div>
+        <div id="claude-panel-body">
         <div id="claude-buttons">
           <button class="claude-btn" onclick="claudeAction('generate_character')">👤 キャラクター生成</button>
           <button class="claude-btn" onclick="claudeAction('plot_development')">📖 プロット展開案</button>
@@ -118,6 +122,7 @@
           <div id="claude-result"></div>
           <button id="insert-result-btn" onclick="insertResult()" style="display:none">↑ エディタに挿入</button>
         </div>
+        </div><!-- /claude-panel-body -->
       </div>
     </main>
   </div>

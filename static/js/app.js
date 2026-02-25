@@ -14,6 +14,12 @@ window.addEventListener('DOMContentLoaded', () => {
     autofocus: false,
   });
 
+  // DOMが確定してから高さを再計算させる
+  setTimeout(() => editor.refresh(), 0);
+
+  // ウィンドウリサイズ時にも再計算
+  window.addEventListener('resize', () => editor.refresh());
+
   editor.on('change', () => {
     updatePreview();
   });
@@ -272,6 +278,27 @@ async function generatePlotFromDraft() {
     btn.textContent = '✍️ draft → plot.md';
   }
 }
+
+// ---- Claudeパネル 折りたたみ ----
+function toggleClaudePanel() {
+  const body = document.getElementById('claude-panel-body');
+  const btn  = document.getElementById('claude-toggle-btn');
+  const collapsed = body.classList.toggle('collapsed');
+  btn.classList.toggle('collapsed', collapsed);
+  btn.textContent = '▼';
+  localStorage.setItem('claudePanelCollapsed', collapsed ? '1' : '0');
+  // パネル開閉後にエディタの高さを再計算
+  setTimeout(() => editor && editor.refresh(), 260);
+}
+
+// 初回ロード時：前回の状態を復元（デフォルトは展開）
+window.addEventListener('DOMContentLoaded', () => {
+  const wasCollapsed = localStorage.getItem('claudePanelCollapsed') === '1';
+  if (wasCollapsed) {
+    document.getElementById('claude-panel-body').classList.add('collapsed');
+    document.getElementById('claude-toggle-btn').classList.add('collapsed');
+  }
+});
 
 // ---- Claude連携 ----
 function claudeAction(action) {
