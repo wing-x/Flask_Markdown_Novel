@@ -222,8 +222,8 @@ def draft_to_plot():
 - 出力はテンプレートのマークダウンのみとし、説明文や前置きは一切不要です"""
 
     message = client.messages.create(
-        model='claude-opus-4-5',
-        max_tokens=2000,
+        model='claude-sonnet-4-6',
+        max_tokens=10000,
         messages=[{'role': 'user', 'content': prompt}]
     )
 
@@ -504,7 +504,7 @@ def generate():
     
     message = client.messages.create(
         model='claude-sonnet-4-6',
-        max_tokens=2000,
+        max_tokens=10000,
         messages=[{'role': 'user', 'content': prompt}]
     )
     
