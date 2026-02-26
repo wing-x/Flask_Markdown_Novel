@@ -361,6 +361,110 @@ def draft_to_plot():
 
     return jsonify({'content': generated, 'saved': True})
 
+@app.route('/api/claude/generate_catchcopy', methods=['POST'])
+def generate_catchcopy():
+    """plot.md の内容を読み込み、魅力的なキャッチコピーを生成して catchcopy.md に保存する"""
+    data = request.json
+    project = data.get('project', '')
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    project_dir = os.path.join(BASE_DIR, project)
+
+    # plot.md を読み込む
+    plot_path = os.path.join(project_dir, 'plot.md')
+    if not os.path.exists(plot_path):
+        return jsonify({'error': 'plot.md がプロジェクト内に見つかりません'}), 404
+
+    with open(plot_path, 'r', encoding='utf-8') as f:
+        plot_content = f.read().strip()
+
+    if not plot_content or plot_content == '# プロット':
+        return jsonify({'error': 'plot.md に内容が書かれていません'}), 400
+
+    prompt = f"""以下のプロットを読み込み、この物語の魅力を端的に表現するキャッチコピーを複数提案してください。
+
+## プロット
+{plot_content}
+
+### 指示
+- 物語の核心となるテーマやコンセプトを捉えたキャッチコピーを提案してください
+- 以下の3つのタイプでそれぞれ3案ずつ、計9案を提案してください：
+  1. **短編型（10〜20文字程度）**: インパクト重視の短いコピー
+  2. **中編型（20〜40文字程度）**: 物語の雰囲気を伝えるコピー
+  3. **長編型（40〜60文字程度）**: ストーリーの魅力を具体的に伝えるコピー
+- それぞれのコピーに簡単な解説（なぜこのコピーを選んだか）を添えてください
+- 出力はマークダウン形式で、以下のフォーマットに従ってください：
+
+# キャッチコピー案
+
+## 短編型（10〜20文字）
+
+### 案1
+[キャッチコピー]
+
+**解説**: [解説文]
+
+### 案2
+[キャッチコピー]
+
+**解説**: [解説文]
+
+### 案3
+[キャッチコピー]
+
+**解説**: [解説文]
+
+## 中編型（20〜40文字）
+
+### 案1
+[キャッチコピー]
+
+**解説**: [解説文]
+
+### 案2
+[キャッチコピー]
+
+**解説**: [解説文]
+
+### 案3
+[キャッチコピー]
+
+**解説**: [解説文]
+
+## 長編型（40〜60文字）
+
+### 案1
+[キャッチコピー]
+
+**解説**: [解説文]
+
+### 案2
+[キャッチコピー]
+
+**解説**: [解説文]
+
+### 案3
+[キャッチコピー]
+
+**解説**: [解説文]"""
+
+    message = client.messages.create(
+        model='claude-sonnet-4-6',
+        max_tokens=10000,
+        messages=[{'role': 'user', 'content': prompt}],
+        timeout=600.0
+    )
+
+    generated = message.content[0].text.strip()
+
+    # catchcopy.md として保存
+    catchcopy_path = os.path.join(project_dir, 'catchcopy.md')
+    with open(catchcopy_path, 'w', encoding='utf-8') as f:
+        f.write(generated)
+
+    return jsonify({'content': generated, 'saved': True})
+
 
 def kanji_to_number(kanji_str, kanji_map):
     """漢数字を数値に変換する関数"""
@@ -403,13 +507,17 @@ def generate_chapters():
     with open(plot_path, 'r', encoding='utf-8') as f:
         plot_content = f.read().strip()
 
-    # character.md / worldbuilding.md もコンテキストとして読み込む
+    # character.md / worldbuilding.md もコンテキストとして読み込む（文字数制限付き）
     extra_ctx = {}
     for fname in ['character.md', 'worldbuilding.md']:
         fpath = os.path.join(project_dir, fname)
         if os.path.exists(fpath):
             with open(fpath, 'r', encoding='utf-8') as f:
-                extra_ctx[fname] = f.read()
+                content = f.read()
+                # コスト削減：各ファイルを2000文字以内に制限
+                if len(content) > 2000:
+                    content = content[:2000] + '\n\n（以下省略）'
+                extra_ctx[fname] = content
 
     # --- plot.md から章セクションを動的に抽出 ---
     import re
@@ -527,9 +635,12 @@ def generate_chapters():
     if not chapters:
         return jsonify({'error': 'plot.md に章が見つかりません'}), 400
 
-    # あらすじを取得（コンテキスト補強用）
+    # あらすじを取得（コンテキスト補強用、簡潔版）
     synopsis_match = re.search(r'## あらすじ\n+([\s\S]+?)(?=\n##|$)', plot_content)
     synopsis = synopsis_match.group(1).strip() if synopsis_match else ''
+    # コスト削減：あらすじを1000文字以内に制限
+    if len(synopsis) > 1000:
+        synopsis = synopsis[:1000] + '...'
 
     # キャラクター情報
     char_ctx = extra_ctx.get('character.md', '')
@@ -548,35 +659,43 @@ def generate_chapters():
             section_label = '章'
             writing_note = '物語の流れを自然につなぎ、読者を次章へ引き込む終わり方を意識してください'
 
-        prompt = f"""あなたは小説の執筆者です。以下のプロット情報をもとに、指定された{section_label}の本文を日本語で執筆してください。
+        # プロンプトを改善：プロットへの忠実度を強化
+        prompt = f"""あなたはプロの小説家です。以下のプロットから{section_label}の本文を執筆してください。
 
-## 物語のあらすじ
-{synopsis}
+【重要】プロットに書かれた内容を必ず全て含めてください。プロットの展開、シーン、登場人物の行動、会話の要点などを省略せず、すべて本文に反映させることが最優先です。
 
-## キャラクター設定
+【あらすじ】
+{synopsis if synopsis else '（未設定）'}
+
+【キャラクター設定】
 {char_ctx if char_ctx else '（未設定）'}
 
-## 世界観設定
+【世界観】
 {world_ctx if world_ctx else '（未設定）'}
 
-## 今回執筆する{section_label}
+【この{section_label}のタイトル】
 {title}
 
-## この{section_label}のプロット（箇条書きのあらまし）
+【この{section_label}のプロット（必ず全て忠実に本文化すること）】
 {body}
 
-## 執筆の指示
-- 上記プロットの箇条書きを忠実に本文へ展開してください
-- 情景・心理描写を豊かに盛り込んだ読み応えのある小説文体で書いてください
-- 会話文・地の文を自然に組み合わせてください
-- 分量の目安は1章辺り3000〜5000字程度です
-- {writing_note}
-- 出力はマークダウン形式で、最初に「# {title.lstrip('# ').strip()}」の見出しを付けてください
-- 前置きや説明文は不要です。本文のみ出力してください"""
+【執筆上の指示】
+1. プロットに記載された出来事・シーン・セリフの要点は必ず全て描写すること
+2. プロットの順序を守り、場面を飛ばさないこと
+3. プロットに書かれていない大きな展開は追加しないこと
+4. 情景描写・心理描写・会話文を自然に組み合わせ、プロットを豊かに肉付けすること
+5. 分量目安：3000〜5000字（プロットのボリュームに応じて調整）
+6. {writing_note}
+7. 最初に「# {title.lstrip('# ').strip()}」の見出しを必ず付けること
+8. 本文のみ出力（前置き・後置きの説明は一切不要）
 
+【確認】
+執筆前に、プロットに書かれた全ての要素（出来事、人物の行動、会話、場面転換など）をリストアップし、それらを全て本文に含めてください。"""
+
+        # max_tokensを増やして十分な長さの本文を生成（3000〜5000字 ≒ 8000〜12000トークン程度）
         message = client.messages.create(
-            model='claude-opus-4-6',
-            max_tokens=30000,
+            model='claude-sonnet-4-6',
+            max_tokens=20000,  # プロットに忠実な長めの本文を生成するため増量
             messages=[{'role': 'user', 'content': prompt}],
             timeout=1800.0  # 30分のタイムアウト
         )
