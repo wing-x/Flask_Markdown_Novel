@@ -87,16 +87,57 @@ async function loadProject(name) {
 async function loadFiles() {
   if (!currentProject) return;
   const res = await fetch(`/api/projects/${currentProject}/files`);
-  const files = await res.json();
+  const structure = await res.json();
   const list = document.getElementById('file-list');
   list.innerHTML = '';
-  files.forEach(f => {
-    const li = document.createElement('li');
-    li.textContent = f;
-    li.onclick = () => openFile(f);
-    li.dataset.name = f;
-    list.appendChild(li);
+  renderFileTree(structure, list, 0);
+}
+
+function renderFileTree(items, parentElement, depth) {
+  items.forEach(item => {
+    if (item.type === 'directory') {
+      // ディレクトリ
+      const dirLi = document.createElement('li');
+      dirLi.className = 'directory-item';
+      dirLi.style.paddingLeft = `${depth * 15}px`;
+
+      const dirHeader = document.createElement('div');
+      dirHeader.className = 'directory-header';
+      dirHeader.innerHTML = `<span class="dir-icon">📁</span> ${item.name}`;
+      dirHeader.onclick = () => toggleDirectory(dirLi);
+
+      dirLi.appendChild(dirHeader);
+
+      const childrenUl = document.createElement('ul');
+      childrenUl.className = 'directory-children';
+      childrenUl.style.display = 'none';
+      renderFileTree(item.children, childrenUl, depth + 1);
+
+      dirLi.appendChild(childrenUl);
+      parentElement.appendChild(dirLi);
+    } else {
+      // ファイル
+      const fileLi = document.createElement('li');
+      fileLi.className = 'file-item';
+      fileLi.style.paddingLeft = `${depth * 15}px`;
+      fileLi.innerHTML = `<span class="file-icon">📄</span> ${item.name}`;
+      fileLi.onclick = () => openFile(item.path);
+      fileLi.dataset.path = item.path;
+      parentElement.appendChild(fileLi);
+    }
   });
+}
+
+function toggleDirectory(dirElement) {
+  const childrenUl = dirElement.querySelector('.directory-children');
+  const icon = dirElement.querySelector('.dir-icon');
+  if (childrenUl.style.display === 'none') {
+    childrenUl.style.display = 'block';
+    icon.textContent = '📂';
+  } else {
+    childrenUl.style.display = 'none';
+    icon.textContent = '📁';
+  }
 }
 
 // ---- ★ クイック作成ボタン（timeline.md / worldbuilding.md など） ----
@@ -154,8 +195,8 @@ async function openFile(filename) {
   document.getElementById('save-btn').disabled = false;
 
   // アクティブ表示
-  document.querySelectorAll('#file-list li').forEach(li => {
-    li.classList.toggle('active', li.dataset.name === filename);
+  document.querySelectorAll('#file-list .file-item').forEach(li => {
+    li.classList.toggle('active', li.dataset.path === filename);
   });
 }
 
@@ -306,6 +347,14 @@ function claudeAction(action) {
   document.querySelectorAll('.claude-btn').forEach(btn => btn.classList.remove('selected'));
   event.target.classList.add('selected');
   document.getElementById('claude-run-btn').disabled = !currentProject;
+
+  // プロット展開案の場合のみ執筆量選択UIを表示
+  const lengthSelector = document.getElementById('plot-length-selector');
+  if (action === 'plot_development') {
+    lengthSelector.style.display = 'block';
+  } else {
+    lengthSelector.style.display = 'none';
+  }
 }
 
 async function runClaudeAction() {
@@ -318,15 +367,22 @@ async function runClaudeAction() {
   const context = document.getElementById('claude-context').value;
   const currentContent = editor.getValue();
 
+  // プロット展開案の場合は執筆量を取得
+  const requestBody = {
+    action: selectedAction,
+    project: currentProject,
+    current_content: currentContent,
+    context
+  };
+
+  if (selectedAction === 'plot_development') {
+    requestBody.length = document.getElementById('plot-length-select').value;
+  }
+
   const res = await fetch('/api/claude/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      action: selectedAction,
-      project: currentProject,
-      current_content: currentContent,
-      context
-    })
+    body: JSON.stringify(requestBody)
   });
 
   btn.disabled = false;

@@ -53,34 +53,60 @@ def list_files(project):
     project_dir = os.path.join(BASE_DIR, project)
     if not os.path.exists(project_dir):
         return jsonify({'error': 'プロジェクトが見つかりません'}), 404
-    
-    files = []
-    for name in sorted(os.listdir(project_dir)):
-        if name.endswith('.md'):
-            files.append(name)
-    return jsonify(files)
 
-@app.route('/api/projects/<project>/files/<filename>', methods=['GET'])
+    def scan_directory(path, prefix=''):
+        """ディレクトリを再帰的にスキャンして構造を返す"""
+        items = []
+        for name in sorted(os.listdir(path)):
+            full_path = os.path.join(path, name)
+            relative_path = os.path.join(prefix, name) if prefix else name
+
+            if os.path.isdir(full_path):
+                # ディレクトリの場合
+                items.append({
+                    'name': name,
+                    'path': relative_path,
+                    'type': 'directory',
+                    'children': scan_directory(full_path, relative_path)
+                })
+            elif name.endswith('.md'):
+                # .mdファイルの場合
+                items.append({
+                    'name': name,
+                    'path': relative_path,
+                    'type': 'file'
+                })
+        return items
+
+    structure = scan_directory(project_dir)
+    return jsonify(structure)
+
+@app.route('/api/projects/<project>/files/<path:filename>', methods=['GET'])
 def get_file(project, filename):
     filepath = os.path.join(BASE_DIR, project, filename)
     if not os.path.exists(filepath):
         return jsonify({'error': 'ファイルが見つかりません'}), 404
-    
+
     with open(filepath, 'r', encoding='utf-8') as f:
         content = f.read()
     return jsonify({'content': content})
 
-@app.route('/api/projects/<project>/files/<filename>', methods=['PUT'])
+@app.route('/api/projects/<project>/files/<path:filename>', methods=['PUT'])
 def save_file(project, filename):
     filepath = os.path.join(BASE_DIR, project, filename)
     data = request.json
     content = data.get('content', '')
-    
+
+    # ディレクトリが存在しない場合は作成
+    file_dir = os.path.dirname(filepath)
+    if file_dir and not os.path.exists(file_dir):
+        os.makedirs(file_dir, exist_ok=True)
+
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(content)
     return jsonify({'success': True})
 
-@app.route('/api/projects/<project>/files/<filename>', methods=['POST'])
+@app.route('/api/projects/<project>/files/<path:filename>', methods=['POST'])
 def create_file(project, filename):
     """新規ファイルを作成（既存の場合はそのまま返す）"""
     project_dir = os.path.join(BASE_DIR, project)
@@ -172,23 +198,118 @@ def get_project_context(project):
 
 # --- Claude API ---
 
-PLOT_TEMPLATE = """# プロット
+def generate_plot_template(draft_content):
+    """plot_draft.mdの構造を解析して動的なプロットテンプレートを生成"""
+    import re
 
-## あらすじ
+    # 数字を漢数字に変換
+    def num_to_kanji(n):
+        kanji_map = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九']
+        if n <= 9:
+            return kanji_map[n]
+        elif n == 10:
+            return '十'
+        elif n < 20:
+            return '十' + kanji_map[n - 10]
+        elif n < 100:
+            tens = n // 10
+            ones = n % 10
+            return kanji_map[tens] + '十' + (kanji_map[ones] if ones > 0 else '')
+        else:
+            return str(n)  # 100以上は数字で返す
 
+    # plot_draftから構造を解析
+    # 部構造（## ■ 第一部... など）
+    part_pattern = re.compile(r'^##\s+■\s+第([一二三四五六七八九十\d]+)部', re.MULTILINE)
+    # 章構造（### 第1章... など）
+    chapter_pattern = re.compile(r'^###\s+第(\d+|[一二三四五六七八九十]+)章', re.MULTILINE)
+    # エピローグ
+    epilogue_pattern = re.compile(r'^###\s+エピローグ', re.MULTILINE)
 
-## 第一章
+    # 部構造を検出
+    parts = list(part_pattern.finditer(draft_content))
+    chapters = list(chapter_pattern.finditer(draft_content))
+    has_epilogue = epilogue_pattern.search(draft_content) is not None
 
+    template = "# プロット\n\n## あらすじ\n\n"
 
-## 第二章
+    if parts:
+        # 部構造がある場合
+        KANJI_TO_NUM = {
+            '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+            '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+        }
 
+        for i, part_match in enumerate(parts):
+            part_num_str = part_match.group(1)
+            part_num = int(part_num_str) if part_num_str.isdigit() else KANJI_TO_NUM.get(part_num_str, i + 1)
 
-## 結末
-"""
+            # この部の範囲を取得
+            part_start = part_match.start()
+            part_end = parts[i + 1].start() if i + 1 < len(parts) else len(draft_content)
+            part_content = draft_content[part_start:part_end]
+
+            # この部内の章を検出
+            part_chapters = chapter_pattern.findall(part_content)
+
+            template += f"\n## 第{num_to_kanji(part_num)}部\n\n"
+
+            for ch_num_str in part_chapters:
+                if ch_num_str.isdigit():
+                    ch_num = int(ch_num_str)
+                else:
+                    # 漢数字を数値に変換
+                    if '十' in ch_num_str:
+                        parts_split = ch_num_str.split('十')
+                        tens = KANJI_TO_NUM.get(parts_split[0], 1) if parts_split[0] else 1
+                        ones = KANJI_TO_NUM.get(parts_split[1], 0) if len(parts_split) > 1 and parts_split[1] else 0
+                        ch_num = tens * 10 + ones
+                    else:
+                        ch_num = KANJI_TO_NUM.get(ch_num_str, 0)
+
+                template += f"\n### 第{num_to_kanji(ch_num)}章\n\n"
+
+    else:
+        # 部構造がない場合は通常の章のみ
+        KANJI_TO_NUM = {
+            '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+            '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+        }
+
+        chapter_count = 0
+        for ch_num_str in chapter_pattern.findall(draft_content):
+            if ch_num_str.isdigit():
+                chapter_count = max(chapter_count, int(ch_num_str))
+            else:
+                if '十' in ch_num_str:
+                    parts_split = ch_num_str.split('十')
+                    tens = KANJI_TO_NUM.get(parts_split[0], 1) if parts_split[0] else 1
+                    ones = KANJI_TO_NUM.get(parts_split[1], 0) if len(parts_split) > 1 and parts_split[1] else 0
+                    num = tens * 10 + ones
+                else:
+                    num = KANJI_TO_NUM.get(ch_num_str, 0)
+                chapter_count = max(chapter_count, num)
+
+        if chapter_count == 0:
+            chapter_count = 5
+
+        for i in range(1, chapter_count + 1):
+            template += f"\n## 第{num_to_kanji(i)}章\n\n"
+
+    # エピローグを追加
+    if has_epilogue:
+        template += "\n## エピローグ\n\n"
+
+    # 結末を追加
+    template += "\n## 結末\n"
+
+    return template
 
 @app.route('/api/claude/draft_to_plot', methods=['POST'])
 def draft_to_plot():
     """plot_draft.md の内容を読み込み、テンプレートに沿った plot.md を生成・保存する"""
+    import re
+
     data = request.json
     project = data.get('project', '')
     if not project:
@@ -207,13 +328,16 @@ def draft_to_plot():
     if not draft_content or draft_content == '# plot_draft':
         return jsonify({'error': 'plot_draft.md に内容が書かれていません'}), 400
 
+    # plot_draft.mdの構造を解析して動的にテンプレートを生成
+    plot_template = generate_plot_template(draft_content)
+
     prompt = f"""以下の「プロット草稿」を読み込み、指定された「出力テンプレート」の各セクションを埋めてください。
 
 ## プロット草稿
 {draft_content}
 
 ## 出力テンプレート（この構造を厳守し、マークダウン形式で出力すること）
-{PLOT_TEMPLATE}
+{plot_template}
 
 ### 指示
 - テンプレートの見出し（# ## など）はそのまま維持してください
@@ -223,8 +347,9 @@ def draft_to_plot():
 
     message = client.messages.create(
         model='claude-sonnet-4-6',
-        max_tokens=10000,
-        messages=[{'role': 'user', 'content': prompt}]
+        max_tokens=30000,
+        messages=[{'role': 'user', 'content': prompt}],
+        timeout=600.0  # 10分のタイムアウト
     )
 
     generated = message.content[0].text.strip()
@@ -236,6 +361,29 @@ def draft_to_plot():
 
     return jsonify({'content': generated, 'saved': True})
 
+
+def kanji_to_number(kanji_str, kanji_map):
+    """漢数字を数値に変換する関数"""
+    if '十' in kanji_str:
+        parts = kanji_str.split('十')
+        # 「十」だけの場合は10
+        if kanji_str == '十':
+            return 10
+        # 「十五」のような場合（10 + 5 = 15）
+        if not parts[0]:
+            tens = 1
+        else:
+            tens = kanji_map.get(parts[0], 1)
+
+        if len(parts) > 1 and parts[1]:
+            ones = kanji_map.get(parts[1], 0)
+        else:
+            ones = 0
+
+        return tens * 10 + ones
+    else:
+        # 単純な一桁の漢数字
+        return kanji_map.get(kanji_str, 0)
 
 @app.route('/api/claude/generate_chapters', methods=['POST'])
 def generate_chapters():
@@ -264,7 +412,6 @@ def generate_chapters():
                 extra_ctx[fname] = f.read()
 
     # --- plot.md から章セクションを動的に抽出 ---
-    # 「## 第◯章」の見出しを正規表現で検索（第一章〜第九章、または第1章〜第9章に対応）
     import re
 
     KANJI_TO_NUM = {
@@ -272,42 +419,113 @@ def generate_chapters():
         '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
     }
 
-    # 章見出しパターン：「## 第一章」「## 第1章」などにマッチ
-    chapter_pattern = re.compile(
-        r'^##\s+第([一二三四五六七八九十\d]+)章',
-        re.MULTILINE
-    )
+    # 部構造があるかチェック（## 第一部 など）
+    part_pattern = re.compile(r'^##\s+第([一二三四五六七八九十\d]+)部', re.MULTILINE)
+    has_parts = part_pattern.search(plot_content) is not None
 
-    # plot.md 全体をセクションに分割（## 区切り）
-    section_pattern = re.compile(r'^(##\s+.+)$', re.MULTILINE)
-    section_splits = list(section_pattern.finditer(plot_content))
+    chapters = []  # [(filepath, title, body, is_ending, is_epilogue, part_num), ...]
 
-    chapters = []  # [(filename, title, body, is_ending), ...]
+    if has_parts:
+        # 部構造がある場合：各部を検出してその配下の章を処理
+        parts_list = list(part_pattern.finditer(plot_content))
 
-    # 結末見出しパターン：「## 結末」にマッチ
-    ending_pattern = re.compile(r'^##\s+結末', re.MULTILINE)
+        for part_idx, part_match in enumerate(parts_list):
+            part_num_str = part_match.group(1)
+            part_num = int(part_num_str) if part_num_str.isdigit() else kanji_to_number(part_num_str, KANJI_TO_NUM)
 
-    for i, match in enumerate(section_splits):
-        heading = match.group(1).strip()
-        body_start = match.end()
-        body_end = section_splits[i + 1].start() if i + 1 < len(section_splits) else len(plot_content)
-        body = plot_content[body_start:body_end].strip()
+            # この部の範囲を取得
+            part_start = part_match.end()
+            part_end = parts_list[part_idx + 1].start() if part_idx + 1 < len(parts_list) else len(plot_content)
 
-        # 通常の章（第◯章）
-        ch_match = chapter_pattern.match(heading)
-        if ch_match:
-            num_str = ch_match.group(1)
-            chapter_num = int(num_str) if num_str.isdigit() else KANJI_TO_NUM.get(num_str, 0)
-            filename = f'chapter{chapter_num:02d}.md'
-            chapters.append((filename, heading, body, False))
-            continue
+            # エピローグと結末の開始位置も考慮
+            epilogue_match = re.search(r'^##\s+エピローグ', plot_content[part_start:], re.MULTILINE)
+            ending_match = re.search(r'^##\s+結末', plot_content[part_start:], re.MULTILINE)
 
-        # 結末セクション
-        if ending_pattern.match(heading):
-            chapters.append(('chapter_end.md', heading, body, True))
+            if epilogue_match and part_start + epilogue_match.start() < part_end:
+                part_end = part_start + epilogue_match.start()
+            if ending_match and part_start + ending_match.start() < part_end:
+                part_end = min(part_end, part_start + ending_match.start())
+
+            part_content = plot_content[part_start:part_end]
+
+            # この部配下の章を検出（### 第◯章）
+            chapter_pattern = re.compile(r'^###\s+第(\d+|[一二三四五六七八九十]+)章', re.MULTILINE)
+            section_pattern = re.compile(r'^(###\s+.+)$', re.MULTILINE)
+            section_splits = list(section_pattern.finditer(part_content))
+
+            # 部のディレクトリ名
+            part_dir = f'part{part_num:02d}'
+
+            for i, match in enumerate(section_splits):
+                heading = match.group(1).strip()
+                body_start = match.end()
+                body_end = section_splits[i + 1].start() if i + 1 < len(section_splits) else len(part_content)
+                body = part_content[body_start:body_end].strip()
+
+                ch_match = chapter_pattern.match(heading)
+                if ch_match:
+                    num_str = ch_match.group(1)
+                    if num_str.isdigit():
+                        chapter_num = int(num_str)
+                    else:
+                        chapter_num = kanji_to_number(num_str, KANJI_TO_NUM)
+
+                    filepath = os.path.join(part_dir, f'chapter{chapter_num:02d}.md')
+                    chapters.append((filepath, heading, body, False, False, part_num))
+
+        # エピローグと結末は部の外（プロジェクトルート）
+        epilogue_pattern = re.compile(r'^##\s+エピローグ', re.MULTILINE)
+        ending_pattern = re.compile(r'^##\s+結末', re.MULTILINE)
+
+        epilogue_match = epilogue_pattern.search(plot_content)
+        if epilogue_match:
+            body_start = epilogue_match.end()
+            ending_match = ending_pattern.search(plot_content[body_start:])
+            body_end = body_start + ending_match.start() if ending_match else len(plot_content)
+            body = plot_content[body_start:body_end].strip()
+            chapters.append(('epilogue.md', '## エピローグ', body, False, True, None))
+
+        ending_match = ending_pattern.search(plot_content)
+        if ending_match:
+            body = plot_content[ending_match.end():].strip()
+            chapters.append(('chapter_end.md', '## 結末', body, True, False, None))
+
+    else:
+        # 部構造がない場合：従来通り
+        chapter_pattern = re.compile(r'^##\s+第([一二三四五六七八九十\d]+)章', re.MULTILINE)
+        epilogue_pattern = re.compile(r'^##\s+エピローグ', re.MULTILINE)
+        ending_pattern = re.compile(r'^##\s+結末', re.MULTILINE)
+        section_pattern = re.compile(r'^(##\s+.+)$', re.MULTILINE)
+
+        section_splits = list(section_pattern.finditer(plot_content))
+
+        for i, match in enumerate(section_splits):
+            heading = match.group(1).strip()
+            body_start = match.end()
+            body_end = section_splits[i + 1].start() if i + 1 < len(section_splits) else len(plot_content)
+            body = plot_content[body_start:body_end].strip()
+
+            ch_match = chapter_pattern.match(heading)
+            if ch_match:
+                num_str = ch_match.group(1)
+                if num_str.isdigit():
+                    chapter_num = int(num_str)
+                else:
+                    chapter_num = kanji_to_number(num_str, KANJI_TO_NUM)
+
+                filepath = f'chapter{chapter_num:02d}.md'
+                chapters.append((filepath, heading, body, False, False, None))
+                continue
+
+            if epilogue_pattern.match(heading):
+                chapters.append(('epilogue.md', heading, body, False, True, None))
+                continue
+
+            if ending_pattern.match(heading):
+                chapters.append(('chapter_end.md', heading, body, True, False, None))
 
     if not chapters:
-        return jsonify({'error': 'plot.md に章（## 第◯章）または結末（## 結末）が見つかりません'}), 400
+        return jsonify({'error': 'plot.md に章が見つかりません'}), 400
 
     # あらすじを取得（コンテキスト補強用）
     synopsis_match = re.search(r'## あらすじ\n+([\s\S]+?)(?=\n##|$)', plot_content)
@@ -319,10 +537,13 @@ def generate_chapters():
 
     created_files = []
 
-    for filename, title, body, is_ending in chapters:
+    for filepath, title, body, is_ending, is_epilogue, part_num in chapters:
         if is_ending:
             section_label = '結末'
-            writing_note = '物語の締めくくりとして、伏線の回収・感情の解放・여韻の残る文章を意識してください'
+            writing_note = '物語の締めくくりとして、伏線の回収・感情の解放・余韻の残る文章を意識してください'
+        elif is_epilogue:
+            section_label = 'エピローグ'
+            writing_note = '物語の後日談として、登場人物たちのその後や心境の変化を描いてください'
         else:
             section_label = '章'
             writing_note = '物語の流れを自然につなぎ、読者を次章へ引き込む終わり方を意識してください'
@@ -348,24 +569,36 @@ def generate_chapters():
 - 上記プロットの箇条書きを忠実に本文へ展開してください
 - 情景・心理描写を豊かに盛り込んだ読み応えのある小説文体で書いてください
 - 会話文・地の文を自然に組み合わせてください
-- 分量の目安は2000〜3000字程度です
+- 分量の目安は1章辺り3000〜5000字程度です
 - {writing_note}
 - 出力はマークダウン形式で、最初に「# {title.lstrip('# ').strip()}」の見出しを付けてください
 - 前置きや説明文は不要です。本文のみ出力してください"""
 
         message = client.messages.create(
-            model='claude-opus-4-5',
-            max_tokens=3000,
-            messages=[{'role': 'user', 'content': prompt}]
+            model='claude-opus-4-6',
+            max_tokens=30000,
+            messages=[{'role': 'user', 'content': prompt}],
+            timeout=1800.0  # 30分のタイムアウト
         )
 
         chapter_text = message.content[0].text.strip()
 
-        chapter_path = os.path.join(project_dir, filename)
-        with open(chapter_path, 'w', encoding='utf-8') as f:
+        # ファイルパスの完全パスを作成し、必要に応じてディレクトリを作成
+        full_path = os.path.join(project_dir, filepath)
+        file_dir = os.path.dirname(full_path)
+        if file_dir and not os.path.exists(file_dir):
+            os.makedirs(file_dir, exist_ok=True)
+
+        with open(full_path, 'w', encoding='utf-8') as f:
             f.write(chapter_text)
 
-        created_files.append({'filename': filename, 'title': title, 'is_ending': is_ending})
+        created_files.append({
+            'filename': filepath,
+            'title': title,
+            'is_ending': is_ending,
+            'is_epilogue': is_epilogue,
+            'part_num': part_num
+        })
 
     return jsonify({'created': created_files, 'count': len(created_files)})
 
@@ -438,13 +671,19 @@ def generate():
 現在の内容:
 {current_content}
 
+目標執筆量: {data.get('length', '中編')}
+- 短編: 5000文字前後（章数: 3-5章）
+- 中編: 5万文字前後（章数: 10-15章）
+- 長編: 10万文字前後（章数: 20-30章）
+
 追加の要望: {extra_context}
 
-以下を含むプロット展開を提案してください：
+指定された目標執筆量に適した章数と展開ペースで、以下を含むプロット展開を提案してください：
 - 次の展開案（複数）
 - 伏線の提案
 - クライマックスへの道筋
-- 読者を引きつけるポイント""",
+- 読者を引きつけるポイント
+- 各章のおおよその文字数配分""",
 
         'generate_timeline': f"""以下のプロジェクト設定を参考に、詳細な物語タイムラインを作成してください。
 
@@ -504,10 +743,11 @@ def generate():
     
     message = client.messages.create(
         model='claude-sonnet-4-6',
-        max_tokens=10000,
-        messages=[{'role': 'user', 'content': prompt}]
+        max_tokens=30000,
+        messages=[{'role': 'user', 'content': prompt}],
+        timeout=600.0  # 10分のタイムアウト
     )
-    
+
     return jsonify({'result': message.content[0].text})
 
 if __name__ == '__main__':

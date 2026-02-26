@@ -114,6 +114,14 @@
           <button class="claude-btn" onclick="claudeAction('consistency_check')">🔍 整合性チェック</button>
           <button class="claude-btn" onclick="claudeAction('dialogue_simulation')">💬 対話シミュレーション</button>
         </div>
+        <div id="plot-length-selector" style="display:none; margin: 10px 0;">
+          <label style="font-weight: bold; display: block; margin-bottom: 5px;">📏 目標執筆量:</label>
+          <select id="plot-length-select" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
+            <option value="短編">短編 (5000文字前後 / 3-5章)</option>
+            <option value="中編" selected>中編 (5万字前後 / 10-15章)</option>
+            <option value="長編">長編 (10万字前後 / 20-30章)</option>
+          </select>
+        </div>
         <div id="claude-input-area">
           <textarea id="claude-context" placeholder="追加の指示・要望を入力（任意）"></textarea>
           <button id="claude-run-btn" onclick="runClaudeAction()" disabled>実行</button>

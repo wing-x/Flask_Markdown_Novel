@@ -155,16 +155,50 @@ body {
   gap: 2px;
 }
 
-#file-list li {
+/* ディレクトリ項目 */
+.directory-item {
+  list-style: none;
+}
+
+.directory-header {
+  padding: 7px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #5a5a7a;
+  font-weight: 600;
+  transition: background 0.15s;
+  user-select: none;
+}
+.directory-header:hover {
+  background: #f8f0ff;
+  color: #7a4ad0;
+}
+
+.directory-children {
+  list-style: none;
+  margin: 2px 0;
+  padding-left: 0;
+}
+
+.dir-icon, .file-icon {
+  display: inline-block;
+  width: 16px;
+  margin-right: 4px;
+}
+
+/* ファイル項目 */
+.file-item {
   padding: 7px 10px;
   border-radius: 7px;
   cursor: pointer;
   font-size: 13px;
   color: #5a5a7a;
   transition: background 0.15s;
+  list-style: none;
 }
-#file-list li:hover { background: #f0f4ff; }
-#file-list li.active {
+.file-item:hover { background: #f0f4ff; }
+.file-item.active {
   background: #e8f0ff;
   color: #2a5ad0;
   font-weight: 600;
