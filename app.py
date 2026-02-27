@@ -153,8 +153,8 @@ def list_files(project):
                     'type': 'directory',
                     'children': scan_directory(full_path, relative_path)
                 })
-            elif name.endswith('.md'):
-                # .mdファイルの場合
+            elif name.endswith('.md') or name.endswith('.txt'):
+                # .mdファイルまたは.txtファイルの場合
                 items.append({
                     'name': name,
                     'path': relative_path,
@@ -769,8 +769,8 @@ def generate_plot_template(draft_content):
     # 部構造（## 第一部「...」 または ## ■ 第一部... など）- タイトルも取得
     # タイトルはオプショナル（「」や『』で囲まれている場合と囲まれていない場合の両方に対応）
     part_pattern = re.compile(r'^##\s+(?:■\s+)?第([一二三四五六七八九十\d]+)部[「『]([^」』]+)[」』]', re.MULTILINE)
-    # 章構造（### 第1章「...」 など）- タイトルも取得
-    chapter_pattern = re.compile(r'^###\s+第(\d+|[一二三四五六七八九十]+)章(?:[「『]([^」』\n]+)[」』])?', re.MULTILINE)
+    # 章構造（## 第1章「...」 または ### 第1章「...」 など）- タイトルも取得
+    chapter_pattern = re.compile(r'^#{2,3}\s+第(\d+|[一二三四五六七八九十]+)章(?:[「『]([^」』\n]+)[」』])?', re.MULTILINE)
     # エピローグ
     epilogue_pattern = re.compile(r'^###\s+エピローグ', re.MULTILINE)
 
@@ -912,6 +912,7 @@ def draft_to_plot():
 
 ### 指示
 - テンプレートの見出し（# ## など）はそのまま維持してください
+- **テンプレートに記載された章のみを出力してください。勝手に章を追加しないこと**
 - 草稿の内容を適切に各セクションへ振り分けてください
 - **各章の粗筋は500～1000文字程度で記述してください**
   - 主要な出来事、登場人物の行動、会話の要点、感情の動きを含めてください
@@ -1436,7 +1437,7 @@ def kanji_to_number(kanji_str, kanji_map):
 
 @app.route('/api/claude/generate_chapters', methods=['POST'])
 def generate_chapters():
-    """plot.md の各章を解析し、chapter01.md, chapter02.md ... として本文を生成・保存する"""
+    """plot.md の各章を解析し、chapter01.txt, chapter02.txt ... として本文を生成・保存する"""
     data = request.json
     project = data.get('project', '')
     series = data.get('series', '') or None   # ★ フロントから渡されたシリーズ名
@@ -1540,7 +1541,7 @@ def generate_chapters():
                     else:
                         chapter_num = kanji_to_number(num_str, KANJI_TO_NUM)
 
-                    filepath = os.path.join(part_dir, f'chapter{chapter_num:02d}.md')
+                    filepath = os.path.join(part_dir, f'chapter{chapter_num:02d}.txt')
                     chapters.append((filepath, heading, body, False, False, part_num))
 
         # エピローグと結末は部の外（プロジェクトルート）
@@ -1553,12 +1554,12 @@ def generate_chapters():
             ending_match = ending_pattern.search(plot_content[body_start:])
             body_end = body_start + ending_match.start() if ending_match else len(plot_content)
             body = plot_content[body_start:body_end].strip()
-            chapters.append(('epilogue.md', '## エピローグ', body, False, True, None))
+            chapters.append(('epilogue.txt', '## エピローグ', body, False, True, None))
 
         ending_match = ending_pattern.search(plot_content)
         if ending_match:
             body = plot_content[ending_match.end():].strip()
-            chapters.append(('chapter_end.md', '## 結末', body, True, False, None))
+            chapters.append(('chapter_end.txt', '## 結末', body, True, False, None))
 
     else:
         # 部構造がない場合：従来通り
@@ -1583,16 +1584,16 @@ def generate_chapters():
                 else:
                     chapter_num = kanji_to_number(num_str, KANJI_TO_NUM)
 
-                filepath = f'chapter{chapter_num:02d}.md'
+                filepath = f'chapter{chapter_num:02d}.txt'
                 chapters.append((filepath, heading, body, False, False, None))
                 continue
 
             if epilogue_pattern.match(heading):
-                chapters.append(('epilogue.md', heading, body, False, True, None))
+                chapters.append(('epilogue.txt', heading, body, False, True, None))
                 continue
 
             if ending_pattern.match(heading):
-                chapters.append(('chapter_end.md', heading, body, True, False, None))
+                chapters.append(('chapter_end.txt', heading, body, True, False, None))
 
     if not chapters:
         return jsonify({'error': 'plot.md に章が見つかりません'}), 400
@@ -1622,7 +1623,7 @@ def generate_chapters():
         # シリーズ情報バナー（シリーズ所属の場合のみ）
         series_banner = f'【シリーズ】{series}\n' if series else ''
 
-        # プロンプト：階層コンテキスト対応
+        # プロンプト：階層コンテキスト対応（通常の小説形式で出力）
         prompt = f"""あなたはプロの小説家です。以下のプロットから{section_label}の本文を執筆してください。
 
 【重要】プロットに書かれた内容を必ず全て含めてください。プロットの展開、シーン、登場人物の行動、会話の要点などを省略せず、すべて本文に反映させることが最優先です。
@@ -1647,8 +1648,10 @@ def generate_chapters():
 4. 情景描写・心理描写・会話文を自然に組み合わせ、プロットを豊かに肉付けすること
 5. 分量目安：3000〜5000字（プロットのボリュームに応じて調整）
 6. {writing_note}
-7. 最初に「# {title.lstrip('# ').strip()}」の見出しを必ず付けること
-8. 本文のみ出力（前置き・後置きの説明は一切不要）
+7. 【重要】マークダウン記法は一切使用しないこと（#見出し、**太字**、_斜体_などは使わない）
+8. 【重要】通常の小説形式で出力すること（Webサイトに直接投稿できる形式）
+9. 章タイトルは通常のテキストとして記述すること（例：「第一章　出会い」）
+10. 本文のみ出力（前置き・後置きの説明は一切不要）
 
 【確認】
 執筆前に、プロットに書かれた全ての要素（出来事、人物の行動、会話、場面転換など）をリストアップし、それらを全て本文に含めてください。"""
@@ -1683,6 +1686,195 @@ def generate_chapters():
     return jsonify({'created': created_files, 'count': len(created_files)})
 
 
+# --- 表記揺れチェック関数 ---
+
+def run_notation_check(project_dir, project, series):
+    """chapter全体の表記揺れをチェックする"""
+    import re
+    from flask import stream_with_context, Response
+
+    # --- 全chapter*.txtファイルを収集 ---
+    chapter_files = []
+    chapter_pat = re.compile(r'chapter\d+\.txt$', re.IGNORECASE)
+
+    # ルート直下
+    for fname in sorted(os.listdir(project_dir)):
+        if chapter_pat.match(fname):
+            chapter_files.append(os.path.join(project_dir, fname))
+        elif fname == 'epilogue.txt' or fname == 'chapter_end.txt':
+            chapter_files.append(os.path.join(project_dir, fname))
+
+    # part*/chapter*.txt
+    for dname in sorted(os.listdir(project_dir)):
+        dpath = os.path.join(project_dir, dname)
+        if os.path.isdir(dpath) and dname.startswith('part'):
+            for fname in sorted(os.listdir(dpath)):
+                if chapter_pat.match(fname):
+                    chapter_files.append(os.path.join(dpath, fname))
+
+    if not chapter_files:
+        return jsonify({'error': 'chapter*.txtが見つかりません'}), 404
+
+    # --- 章本文を結合（長すぎる場合は各章から抜粋） ---
+    CHAPTER_CHAR_LIMIT = 3000   # 1章あたりの文字数上限
+    chapters_text_parts = []
+    for fpath in chapter_files:
+        with open(fpath, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+        label = os.path.relpath(fpath, project_dir)
+
+        # 長すぎる場合は冒頭と末尾のみ
+        if len(content) > CHAPTER_CHAR_LIMIT:
+            half = CHAPTER_CHAR_LIMIT // 2
+            content = content[:half] + f'\n\n... （中略） ...\n\n' + content[-half:]
+
+        chapters_text_parts.append(f'### {label}\n{content}')
+
+    chapters_combined = '\n\n---\n\n'.join(chapters_text_parts)
+
+    # --- 設定ファイルから固有名詞リストを取得 ---
+    reference_terms = []
+
+    # character.md から人物名を抽出
+    char_path = os.path.join(project_dir, 'character.md')
+    if os.path.exists(char_path):
+        with open(char_path, 'r', encoding='utf-8') as f:
+            char_content = f.read()
+            reference_terms.append(f'【登場人物】\n{char_content[:1000]}')
+
+    # worldbuilding.md から用語を抽出
+    world_path = os.path.join(project_dir, 'worldbuilding.md')
+    if os.path.exists(world_path):
+        with open(world_path, 'r', encoding='utf-8') as f:
+            world_content = f.read()
+            reference_terms.append(f'【世界観・用語】\n{world_content[:1000]}')
+
+    # シリーズ聖典からも参照
+    if series:
+        series_dir = get_series_dir(series)
+
+        chars_master_path = os.path.join(series_dir, 'characters_master.md')
+        if os.path.exists(chars_master_path):
+            with open(chars_master_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                reference_terms.append(f'【シリーズ共通キャラクター】\n{content[:1500]}')
+
+        bible_path = os.path.join(series_dir, 'bible.md')
+        if os.path.exists(bible_path):
+            with open(bible_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                reference_terms.append(f'【シリーズ世界設定】\n{content[:1500]}')
+
+    reference_text = '\n\n'.join(reference_terms) if reference_terms else '（参考設定なし）'
+
+    # --- プロンプト構築 ---
+    prompt = f"""あなたは長編小説の校閲担当編集者です。
+以下の全章テキストを読み込み、**表記揺れ**を徹底的にチェックしてください。
+
+## 表記揺れチェックの対象
+
+### 1. 固有名詞の表記揺れ
+- **人物名**: 「太郎」と「たろう」、「サトウ」と「佐藤」など
+- **地名**: 「東京」と「トーキョー」、「江戸」と「エド」など
+- **組織名**: 「騎士団」と「ナイツ」など
+
+### 2. 一般用語の表記揺れ
+- **漢字・ひらがな**: 「出来る」と「できる」、「無い」と「ない」など
+- **カタカナ・英語**: 「コンピューター」と「コンピュータ」、「サーバー」と「サーバ」など
+- **送り仮名**: 「行なう」と「行う」、「問い合わせ」と「問合せ」など
+
+### 3. 数字・単位の表記
+- **算用数字と漢数字**: 「1人」と「一人」、「3日」と「三日」など
+- **単位**: 「メートル」と「m」、「キロ」と「kg」など
+
+### 4. 記号・括弧の統一
+- **三点リーダー**: 「...」と「…」と「‥」
+- **ダッシュ**: 「—」と「―」と「ー」
+- **括弧**: 「（）」と「()」
+
+## 参考：この作品の固有名詞・用語設定
+{reference_text}
+
+## 全章テキスト（全{len(chapter_files)}ファイル）
+{chapters_combined}
+
+---
+
+## 出力フォーマット（厳守）
+
+# 表記揺れチェック結果
+
+## 🔴 重大な表記揺れ（固有名詞）
+（同一の人物・地名・組織が複数の表記で記載されている場合）
+
+- **[キャラ名]**
+  - 揺れている表記: 「○○」（chapter01.txt）、「××」（chapter05.txt）
+  - 推奨統一表記: 「○○」
+  - 理由: 設定ファイルでは「○○」と記載されている
+
+（問題がなければ「問題なし ✅」と記載）
+
+---
+
+## 🟡 一般用語の表記揺れ
+（漢字・ひらがな・カタカナの表記が統一されていない場合）
+
+- **[用語]**
+  - 揺れている表記: 「できる」（15箇所）、「出来る」（3箇所）
+  - 推奨統一表記: 「できる」（補助動詞はひらがな推奨）
+
+（問題がなければ「問題なし ✅」と記載）
+
+---
+
+## 📝 数字・記号の表記揺れ
+（数字や記号の表記が統一されていない場合）
+
+- **[数字]**
+  - 揺れている表記: 「3人」（10箇所）、「三人」（2箇所）
+  - 推奨: 小説では基本的に漢数字を推奨
+
+（問題がなければ「問題なし ✅」と記載）
+
+---
+
+## 📊 サマリー
+- 重大な表記揺れ（固有名詞）: ○件
+- 一般用語の表記揺れ: ○件
+- 数字・記号の表記揺れ: ○件
+- 総合評価: （A: 問題なし / B: 軽微な揺れあり / C: 要修正 / D: 重大な揺れあり）
+
+コメント: （全体の印象・特記事項を2〜3文で）
+
+---
+
+【重要】
+- 各項目で具体的なファイル名と該当箇所を明示してください
+- 推奨統一表記を必ず提示してください
+- 設定ファイルとの整合性を優先してください
+"""
+
+    # --- ストリーミングで返す ---
+    def generate_stream():
+        try:
+            with client.messages.stream(
+                model='claude-sonnet-4-6',
+                max_tokens=16000,
+                messages=[{'role': 'user', 'content': prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield f"data: {json.dumps({'chunk': text})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate_stream()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
+
+
 # --- 整合性チェック専用API ---
 
 @app.route('/api/claude/consistency_check', methods=['POST'])
@@ -1697,7 +1889,7 @@ def run_consistency_check():
     data    = request.json
     project = data.get('project', '')
     series  = data.get('series', '') or None
-    scope   = data.get('scope', 'volume')   # 'volume' or 'series'
+    scope   = data.get('scope', 'volume')   # 'volume' or 'series' or 'notation'
     target_file = data.get('target_file', '')  # 特定ファイルを対象にする場合
 
     if not project:
@@ -1707,6 +1899,10 @@ def run_consistency_check():
         series = detect_series_from_project(project)
 
     project_dir = os.path.join(BASE_DIR, project)
+
+    # --- 表記揺れチェックの場合は別処理 ---
+    if scope == 'notation':
+        return run_notation_check(project_dir, project, series)
 
     # --- 巻メタ情報 ---
     vol_order = '?'
@@ -1774,9 +1970,9 @@ def run_consistency_check():
         if content:
             target_ctx = f'### [チェック対象ファイル: {target_file}]\n{content}'
     else:
-        # chapter*.md の最初と最後の1章ずつをサンプルとして含める
+        # chapter*.txt の最初と最後の1章ずつをサンプルとして含める
         import re as _re
-        chapter_pat = _re.compile(r'chapter\d+\.md$', _re.IGNORECASE)
+        chapter_pat = _re.compile(r'chapter\d+\.txt$', _re.IGNORECASE)
         ch_files = sorted([f for f in os.listdir(project_dir) if chapter_pat.match(f)])
         samples = []
         if ch_files:
@@ -1803,7 +1999,14 @@ def run_consistency_check():
     target_section = f'## チェック対象\n\n{target_ctx}' if target_ctx else ''
 
     prompt = f"""あなたは長編小説シリーズの専任編集者です。
-以下の資料を読み込み、**{scope_label}** の視点で整合性をチェックしてください。
+以下の資料を読み込み、**{scope_label}** の視点で整合性と文章品質をチェックしてください。
+
+【重要】このチェックでは以下の2つの側面を評価します：
+1. **ストーリーの整合性**: 設定・キャラクター・伏線の矛盾チェック
+2. **小説としての品質**: 文章表現・描写技法・物語展開の質的評価
+
+特に「Show, Don't Tell（見せる、説明しない）」の原則に基づき、
+読者を物語に没入させる描写ができているかを厳密にチェックしてください。
 
 チェックスコープ: {scope_label}
 対象: 第{vol_order}巻「{vol_title}」{"（シリーズ: " + series + "）" if series else ""}
@@ -1825,12 +2028,62 @@ def run_consistency_check():
 
 以下の観点で問題・懸念事項を洗い出し、**必ず下記のフォーマット**で出力してください。
 
+【特に重視すべき点】
+- 「彼は怒っていた」「彼女は悲しそうだった」などの感情の直接説明を見つけること
+- キャラクターが不自然に設定を説明するセリフ（説明台詞）を指摘すること
+- 描写が抽象的で具体性に欠ける箇所を特定すること
+- 視覚描写に偏り、音・匂い・触感・味覚が欠けている箇所を指摘すること
+
 ### チェック観点
 1. **設定の矛盾**: 世界観・ルール・固有名詞の表記ゆれ・前後矛盾
 2. **キャラクターの逸脱**: 性格・口調・能力がマスターシートや過去巻と食い違っていないか
 3. **伏線の問題**: 回収されないまま放置されている伏線、矛盾する伏線の扱い
 4. **過去巻との齟齬**: {"過去巻サマリーと今巻の設定・イベントが矛盾していないか" if scope == "series" else "（この巻スコープではスキップ）"}
-5. **推奨改善**: 重大ではないが品質向上につながる提案
+5. **文章ルールの問題**: 以下の一般的な小説執筆ルールに違反していないかチェック
+
+   【基本的な文章ルール】
+   - マークダウン記法の混入（#見出し、**太字**、_斜体_、`コード`など）
+   - 不自然な改行や空白行の過剰使用
+   - 読点（、）の適切な使用
+   - 文末表現の多様性（「〜た。」ばかりになっていないか）
+
+   【小説としてのルール（Show, Don't Tell原則）】
+   - **説明的すぎる地の文**:
+     ❌ 悪い例: 「彼は怒っていた」「彼女は美しかった」
+     ⭕ 良い例: 「彼の拳が震え、歯を食いしばる音が聞こえた」「道行く人々が振り返り、彼女の姿を目で追った」
+
+   - **感情の直接説明**:
+     ❌ 悪い例: 「悲しかった」「嬉しかった」「不安になった」
+     ⭕ 良い例: 「胸が締め付けられ、視界が滲んだ」「思わず笑みがこぼれ、足取りが軽くなった」「心臓の鼓動が早まり、手のひらに汗が滲む」
+
+   - **情報の羅列・説明台詞**:
+     ❌ 悪い例: 「この街は100年前に建てられた要塞都市で、現在は商業の中心地となっている」
+     ❌ 悪い例: 「君も知っての通り、この魔法は王族にしか使えないんだ」（相手が知っていることを説明する不自然なセリフ）
+     ⭕ 良い例: 物語の進行の中で、キャラクターの行動や会話を通じて自然に情報を提示する
+
+   【視点と時制】
+   - 視点の統一（三人称・一人称が混在していないか）
+   - 時制の統一（過去形・現在形が不自然に混在していないか）
+   - 視点人物以外の内面描写が混入していないか（三人称単視点の場合）
+
+   【会話と描写のバランス】
+   - 地の文と会話文のバランス（会話のみが続きすぎていないか）
+   - 会話文の記号（「」『』の使い分けが適切か）
+   - セリフが説明的すぎないか（キャラクターが不自然に設定を説明していないか）
+   - 会話の前後に適切な描写（動作・表情・間）があるか
+
+   【描写の質】
+   - 五感描写のバランス（視覚に偏りすぎていないか）
+   - 具体性のある描写（「美しい」「大きい」などの抽象語に頼りすぎていないか）
+   - 比喩・暗喩の適切な使用
+   - 冗長な表現や同じ表現の繰り返し
+
+   【ペースと緊張感】
+   - シーンの緩急（重要なシーンが駆け足になっていないか）
+   - 不要な描写で物語が停滞していないか
+   - 章の終わりに引きがあるか（次を読みたくなる終わり方か）
+
+6. **推奨改善**: 重大ではないが品質向上につながる提案
 
 ### 出力フォーマット（厳守）
 
@@ -1858,6 +2111,40 @@ def run_consistency_check():
 
 ---
 
+### 📝 文章ルールの問題
+（小説執筆ルールに関する問題点）
+
+#### 基本的な文章ルール
+- **[表記・記法]** 問題の説明。該当箇所と改善案。
+
+#### Show, Don't Tell（描写の質）
+- **[説明過多]** 問題の説明。
+  - 該当箇所: 「〜」
+  - 問題点: なぜこれが説明的か
+  - 改善例: 「〜」（行動・表情・五感で描写）
+
+- **[感情の直接説明]** 問題の説明。
+  - 該当箇所: 「〜」
+  - 改善例: 「〜」（身体感覚や具体的な反応で表現）
+
+- **[説明台詞]** キャラクターが不自然に設定を説明している箇所。
+  - 該当箇所: 「〜」
+  - 問題点: なぜこのセリフが不自然か
+  - 改善案: 物語の中で自然に情報を提示する方法
+
+#### 視点と時制
+- **[視点の問題]** 問題の説明。
+
+#### 会話と描写のバランス
+- **[会話の問題]** 問題の説明。
+
+#### ペースと緊張感
+- **[ペース配分]** 問題の説明。
+
+（問題がなければ「問題なし ✅」と記載）
+
+---
+
 ### 🟢 改善提案
 （必須ではないが、品質・整合性向上のための提案）
 
@@ -1870,6 +2157,7 @@ def run_consistency_check():
 ### 📊 サマリー
 - 重大な問題: ○件
 - 要確認事項: ○件
+- 文章ルール問題: ○件
 - 改善提案: ○件
 - 総合評価: （A: 問題なし / B: 軽微な問題あり / C: 要修正 / D: 重大な問題あり）
 
@@ -1881,7 +2169,7 @@ def run_consistency_check():
         try:
             with client.messages.stream(
                 model='claude-sonnet-4-6',
-                max_tokens=4000,
+                max_tokens=16000,  # 整合性チェック結果が途中で切れないように大幅に増加
                 messages=[{'role': 'user', 'content': prompt}],
             ) as stream:
                 for text in stream.text_stream:
@@ -1895,6 +2183,251 @@ def run_consistency_check():
         mimetype='text/event-stream',
         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
     )
+
+
+@app.route('/api/claude/fix_chapter_file', methods=['POST'])
+def fix_chapter_file():
+    """整合性チェック結果に基づいてchapter.txtを自動修正する"""
+    data = request.json
+    project = data.get('project', '')
+    series = data.get('series', '') or None
+    chapter_file = data.get('chapter_file', '')  # 修正対象のファイル名（例: chapter01.txt）
+    check_result = data.get('check_result', '')  # 整合性チェック結果のテキスト
+
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    if not chapter_file:
+        return jsonify({'error': '修正対象のファイルが指定されていません'}), 400
+
+    if not series:
+        series = detect_series_from_project(project)
+
+    project_dir = os.path.join(BASE_DIR, project)
+    chapter_path = os.path.join(project_dir, chapter_file)
+
+    # partディレクトリ内のファイルの可能性もチェック
+    if not os.path.exists(chapter_path):
+        # part01/, part02/ などの中を探す
+        for dname in os.listdir(project_dir):
+            dpath = os.path.join(project_dir, dname)
+            if os.path.isdir(dpath) and dname.startswith('part'):
+                test_path = os.path.join(dpath, chapter_file)
+                if os.path.exists(test_path):
+                    chapter_path = test_path
+                    break
+
+    if not os.path.exists(chapter_path):
+        return jsonify({'error': f'{chapter_file}が見つかりません'}), 404
+
+    # 現在の章ファイルを読み込む
+    with open(chapter_path, 'r', encoding='utf-8') as f:
+        current_chapter = f.read()
+
+    # コンテキスト収集（シリーズ聖典・設定ファイル）
+    context_parts = []
+
+    if series:
+        series_dir = get_series_dir(series)
+        bible_path = os.path.join(series_dir, 'bible.md')
+        if os.path.exists(bible_path):
+            content = _read_and_trim(bible_path, 3000)
+            context_parts.append(f'### [世界設定バイブル]\n{content}')
+
+        chars_path = os.path.join(series_dir, 'characters_master.md')
+        if os.path.exists(chars_path):
+            content = _read_and_trim(chars_path, 3000)
+            context_parts.append(f'### [キャラクターマスター]\n{content}')
+
+    # この巻の設定ファイル
+    for fname in ['character.md', 'plot.md']:
+        fpath = os.path.join(project_dir, fname)
+        content = _read_and_trim(fpath, 2000)
+        if content:
+            context_parts.append(f'### [{fname}]\n{content}')
+
+    context_text = '\n\n'.join(context_parts) if context_parts else '（コンテキスト情報なし）'
+
+    # 修正プロンプト
+    prompt = f"""あなたはプロの小説編集者です。
+以下の整合性チェック結果に基づいて、章ファイルの内容を修正してください。
+
+## 整合性チェック結果
+{check_result if check_result else '（特に問題点の指摘なし。一般的な文章品質向上のための修正を行ってください）'}
+
+## 参考コンテキスト
+{context_text}
+
+## 現在の章ファイル（{chapter_file}）
+{current_chapter}
+
+---
+
+## 修正指示
+
+以下の優先順位で修正を行ってください：
+
+1. **重大な矛盾・エラー**: 設定との矛盾を必ず修正
+2. **Show, Don't Tell違反**: 感情の直接説明を具体的な描写に置き換え
+   - 「彼は怒っていた」→ 行動・表情・声色で描写
+   - 「悲しかった」→ 身体感覚・五感で表現
+   - 説明台詞を自然な会話に修正
+3. **視点の問題**: 視点の統一、視点人物以外の内面描写を削除
+4. **描写の質**: 抽象的な表現を具体的に、五感のバランスを改善
+5. **文章ルール**: マークダウン記法の削除、文末表現の多様化
+
+【重要な制約】
+- プロットや物語の展開は変更しないこと
+- キャラクターの行動や会話の意図は保持すること
+- 文章量は元の±20%程度に抑えること
+- 通常の小説形式（マークダウン記法なし）で出力すること
+- 修正後のファイル全文のみを出力すること（前置き・説明は不要）
+
+【出力形式】
+- 冒頭に説明や前置きを付けず、章の内容そのものを出力してください
+- ```markdown などのコードブロックも不要です
+- 章タイトルから本文まで、そのままファイルに保存できる形式で出力してください
+"""
+
+    # Claude APIで修正版を生成
+    try:
+        message = client.messages.create(
+            model='claude-sonnet-4-6',
+            max_tokens=20000,
+            messages=[{'role': 'user', 'content': prompt}],
+            timeout=1800.0
+        )
+
+        fixed_chapter = message.content[0].text.strip()
+
+        # ファイルを上書き保存
+        with open(chapter_path, 'w', encoding='utf-8') as f:
+            f.write(fixed_chapter)
+
+        return jsonify({
+            'success': True,
+            'message': f'{chapter_file}を修正しました',
+            'file': chapter_file,
+            'preview': fixed_chapter[:500] + '...' if len(fixed_chapter) > 500 else fixed_chapter
+        })
+
+    except Exception as e:
+        return jsonify({'error': f'修正中にエラーが発生しました: {str(e)}'}), 500
+
+
+@app.route('/api/claude/fix_notation_issues', methods=['POST'])
+def fix_notation_issues():
+    """表記揺れチェック結果に基づいて全chapter.txtを一括修正する"""
+    data = request.json
+    project = data.get('project', '')
+    series = data.get('series', '') or None
+    notation_result = data.get('check_result', '')  # 表記揺れチェック結果
+
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    if not notation_result:
+        return jsonify({'error': '表記揺れチェック結果がありません'}), 400
+
+    if not series:
+        series = detect_series_from_project(project)
+
+    project_dir = os.path.join(BASE_DIR, project)
+
+    # --- 全chapter*.txtファイルを収集 ---
+    import re
+    chapter_files = []
+    chapter_pat = re.compile(r'chapter\d+\.txt$', re.IGNORECASE)
+
+    # ルート直下
+    for fname in sorted(os.listdir(project_dir)):
+        if chapter_pat.match(fname):
+            chapter_files.append((fname, os.path.join(project_dir, fname)))
+        elif fname == 'epilogue.txt' or fname == 'chapter_end.txt':
+            chapter_files.append((fname, os.path.join(project_dir, fname)))
+
+    # part*/chapter*.txt
+    for dname in sorted(os.listdir(project_dir)):
+        dpath = os.path.join(project_dir, dname)
+        if os.path.isdir(dpath) and dname.startswith('part'):
+            for fname in sorted(os.listdir(dpath)):
+                if chapter_pat.match(fname):
+                    rel_path = os.path.join(dname, fname)
+                    chapter_files.append((rel_path, os.path.join(dpath, fname)))
+
+    if not chapter_files:
+        return jsonify({'error': 'chapter*.txtが見つかりません'}), 404
+
+    # --- 各ファイルを修正 ---
+    fixed_files = []
+    errors = []
+
+    for file_name, file_path in chapter_files:
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                original_content = f.read()
+
+            # 修正プロンプト
+            prompt = f"""あなたはプロの校閲編集者です。
+以下の表記揺れチェック結果に基づいて、この章ファイルの表記を統一してください。
+
+## 表記揺れチェック結果
+{notation_result}
+
+## 修正対象ファイル: {file_name}
+{original_content}
+
+---
+
+## 修正指示
+
+表記揺れチェック結果で指摘された表記揺れを、推奨統一表記に従って修正してください。
+
+【重要な制約】
+1. **物語の内容は一切変更しないこと**（表記のみを修正）
+2. 固有名詞の表記揺れを最優先で修正
+3. 一般用語、数字、記号も統一
+4. 指摘されていない箇所は変更しない
+5. 通常の小説形式（マークダウン記法なし）を維持
+
+【出力形式】
+- 冒頭に説明や前置きを付けず、修正後の章の内容そのものを出力してください
+- コードブロック（```）も不要です
+- そのままファイルに保存できる形式で出力してください
+"""
+
+            # Claude APIで修正版を生成
+            message = client.messages.create(
+                model='claude-sonnet-4-6',
+                max_tokens=20000,
+                messages=[{'role': 'user', 'content': prompt}],
+                timeout=1800.0
+            )
+
+            fixed_content = message.content[0].text.strip()
+
+            # ファイルを上書き保存
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(fixed_content)
+
+            fixed_files.append(file_name)
+
+        except Exception as e:
+            errors.append({'file': file_name, 'error': str(e)})
+
+    if errors:
+        return jsonify({
+            'success': True,
+            'message': f'{len(fixed_files)}ファイル修正完了（{len(errors)}ファイルでエラー）',
+            'fixed_files': fixed_files,
+            'errors': errors
+        })
+    else:
+        return jsonify({
+            'success': True,
+            'message': f'{len(fixed_files)}ファイルを修正しました',
+            'fixed_files': fixed_files
+        })
 
 
 @app.route('/api/claude/fix_plot_inconsistencies', methods=['POST'])
@@ -2421,7 +2954,7 @@ def context_debug():
 
 @app.route('/api/claude/generate_volume_summary', methods=['POST'])
 def generate_volume_summary():
-    """巻内の全 chapter*.md を読み込み、次巻執筆用の圧縮サマリーを生成して
+    """巻内の全 chapter*.txt を読み込み、次巻執筆用の圧縮サマリーを生成して
     series_summary.md に追記する。
     ストリーミングレスポンスで進捗を返す。
     """
@@ -2450,18 +2983,18 @@ def generate_volume_summary():
     vol_order = vol_info['order'] if vol_info else '?'
     vol_title = vol_info['title'] if vol_info else project
 
-    # --- chapter*.md を収集（part ディレクトリ含む） ---
+    # --- chapter*.txt を収集（part ディレクトリ含む） ---
     chapter_files = []
-    chapter_pat = re.compile(r'chapter\d+\.md$', re.IGNORECASE)
+    chapter_pat = re.compile(r'chapter\d+\.txt$', re.IGNORECASE)
 
     # ルート直下
     for fname in sorted(os.listdir(project_dir)):
         if chapter_pat.match(fname):
             chapter_files.append(os.path.join(project_dir, fname))
-        elif fname == 'epilogue.md' or fname == 'chapter_end.md':
+        elif fname == 'epilogue.txt' or fname == 'chapter_end.txt':
             chapter_files.append(os.path.join(project_dir, fname))
 
-    # part*/chapter*.md
+    # part*/chapter*.txt
     for dname in sorted(os.listdir(project_dir)):
         dpath = os.path.join(project_dir, dname)
         if os.path.isdir(dpath) and dname.startswith('part'):
@@ -2470,7 +3003,7 @@ def generate_volume_summary():
                     chapter_files.append(os.path.join(dpath, fname))
 
     if not chapter_files:
-        return jsonify({'error': 'chapter*.md が見つかりません。先に章を生成してください'}), 400
+        return jsonify({'error': 'chapter*.txt が見つかりません。先に章を生成してください'}), 400
 
     # --- 章本文を結合（長すぎる場合は冒頭+末尾のみ） ---
     CHAPTER_CHAR_LIMIT = 2000   # 1章あたりの文字数上限

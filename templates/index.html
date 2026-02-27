@@ -273,6 +273,8 @@
                     onclick="setCcScope('volume')">この巻のみ</button>
             <button class="fs-tab" id="cc-scope-series" data-scope="series"
                     onclick="setCcScope('series')">シリーズ全体</button>
+            <button class="fs-tab" id="cc-scope-notation" data-scope="notation"
+                    onclick="setCcScope('notation')">表記揺れチェック</button>
           </div>
         </div>
         <!-- 対象ファイル -->
@@ -310,6 +312,7 @@
         <div id="cc-summary-card" class="cc-summary-card" style="display:none;">
           <div id="cc-badge-critical" class="cc-badge cc-badge-critical">🔴 <span id="cc-count-critical">0</span></div>
           <div id="cc-badge-warning"  class="cc-badge cc-badge-warning">🟡 <span id="cc-count-warning">0</span></div>
+          <div id="cc-badge-textrule" class="cc-badge cc-badge-textrule">📝 <span id="cc-count-textrule">0</span></div>
           <div id="cc-badge-suggest"  class="cc-badge cc-badge-suggest">🟢 <span id="cc-count-suggest">0</span></div>
           <div id="cc-grade" class="cc-grade"></div>
         </div>
@@ -325,6 +328,38 @@
           <p style="font-size: 12px; color: #666; margin-top: 8px;">
             ※ 指摘された矛盾をAIが自動的に修正し、plot.mdを上書きします
           </p>
+        </div>
+
+        <!-- chapter.txt修正ボタン -->
+        <div id="cc-fix-chapter-btn-container" style="display:none; margin-top: 20px; text-align: center;">
+          <p id="cc-fix-target-file-label" style="font-size: 14px; color: #555; margin-bottom: 10px;">
+            修正対象: <strong id="cc-fix-target-file-name">--</strong>
+          </p>
+          <button id="cc-fix-chapter-btn" class="fs-add-btn" onclick="fixChapterFile()">
+            🔧 このファイルを自動修正
+          </button>
+          <p style="font-size: 12px; color: #666; margin-top: 8px;">
+            ※ 整合性チェック結果に基づいて文章を自動修正し、ファイルを上書きします
+          </p>
+        </div>
+
+        <!-- 表記揺れ一括修正ボタン -->
+        <div id="cc-fix-notation-btn-container" style="display:none; margin-top: 20px; text-align: center;">
+          <p style="font-size: 14px; color: #555; margin-bottom: 10px;">
+            <strong>全chapter*.txtファイル</strong>の表記揺れを一括修正します
+          </p>
+          <button id="cc-fix-notation-btn" class="fs-add-btn" onclick="fixNotationIssues()">
+            🔧 表記揺れを一括修正
+          </button>
+          <p style="font-size: 12px; color: #666; margin-top: 8px;">
+            ※ 表記揺れチェック結果に基づいて全章ファイルを自動修正します（時間がかかります）
+          </p>
+          <div id="cc-fix-notation-progress" style="display:none; margin-top: 15px;">
+            <div style="background: #f0f0f0; border-radius: 10px; height: 20px; overflow: hidden;">
+              <div id="cc-fix-notation-progress-bar" style="background: #4caf50; height: 100%; width: 0%; transition: width 0.3s;"></div>
+            </div>
+            <p id="cc-fix-notation-progress-label" style="font-size: 13px; color: #666; margin-top: 8px;"></p>
+          </div>
         </div>
 
       </div>

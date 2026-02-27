@@ -1509,6 +1509,7 @@ body {
 }
 .cc-badge-critical { background: #fde8e8; color: #c03030; }
 .cc-badge-warning  { background: #fff4d0; color: #a06800; }
+.cc-badge-textrule { background: #e8f0fe; color: #1967d2; }
 .cc-badge-suggest  { background: #d8f4e4; color: #1a6a40; }
 
 .cc-grade {

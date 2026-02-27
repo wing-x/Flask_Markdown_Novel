@@ -43,8 +43,25 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 function updatePreview() {
-  const md = editor.getValue();
-  document.getElementById('preview').innerHTML = marked.parse(md);
+  const content = editor.getValue();
+  const previewEl = document.getElementById('preview');
+
+  // .txtファイルの場合はプレーンテキストとして表示（改行を保持）
+  if (currentFile && currentFile.endsWith('.txt')) {
+    previewEl.innerHTML = '<pre style="white-space: pre-wrap; word-wrap: break-word; font-family: inherit; margin: 0;">' +
+                          escapeHtml(content) +
+                          '</pre>';
+  } else {
+    // .mdファイルの場合はMarkdownレンダリング
+    previewEl.innerHTML = marked.parse(content);
+  }
+}
+
+// HTMLエスケープ用ヘルパー関数
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }
 
 // ---- トースト通知 ----
@@ -366,6 +383,7 @@ function renderFileTree(items, parentElement, depth) {
       fileLi.style.paddingLeft = `${depth * 15}px`;
       fileLi.innerHTML = `<span class="file-icon">📄</span> ${item.name}`;
       fileLi.draggable = true;
+      fileLi.dataset.path = item.path; // アクティブ表示用にパスを保存
       fileLi.onclick = (e) => {
         if (e.button === 0) { // 左クリック
           openFile(item.path);
@@ -460,6 +478,14 @@ async function openFile(filename) {
   const data = await res.json();
   currentFile = filename;
   editor.setValue(data.content);
+
+  // .txtファイルの場合はプレーンテキストモード、.mdファイルの場合はMarkdownモード
+  if (filename.endsWith('.txt')) {
+    editor.setOption('mode', 'text/plain');
+  } else if (filename.endsWith('.md')) {
+    editor.setOption('mode', 'markdown');
+  }
+
   updatePreview();
   document.getElementById('current-file-label').textContent = `✏️ ${filename}`;
   document.getElementById('save-btn').disabled = false;
@@ -1564,7 +1590,9 @@ function setCcScope(scope) {
 function updateCcPlaceholder() {
   const el = document.getElementById('cc-placeholder-scope');
   if (!el) return;
-  if (ccScope === 'series' && currentSeries) {
+  if (ccScope === 'notation') {
+    el.textContent = '範囲：この巻の全chapter*.txtファイル（固有名詞・用語の表記揺れを検出）';
+  } else if (ccScope === 'series' && currentSeries) {
     el.textContent = '範囲：シリーズ聖典 ＋ 過去巻サマリー ＋ 伏線マスター ＋ この巻の設定';
   } else {
     el.textContent = '範囲：シリーズ聖典（ある場合）＋ この巻の設定ファイル ＋ 章サンプル';
@@ -1626,6 +1654,9 @@ async function runConsistencyCheck() {
   const summaryCard = document.getElementById('cc-summary-card');
   const resultBody  = document.getElementById('cc-result-body');
   const targetFile  = document.getElementById('cc-target-file').value;
+
+  // 対象ファイルをグローバル変数に保存（修正ボタンで使用）
+  ccTargetFile = targetFile;
 
   btn.disabled = true;
   btn.textContent = '⏳ チェック中…';
@@ -1718,6 +1749,7 @@ async function runConsistencyCheck() {
 // ---- 結果パース・サマリーカード更新 ----
 
 let ccResultText = ''; // 整合性チェック結果を保存
+let ccTargetFile = '';  // 整合性チェックの対象ファイル
 
 function parseCcSummary(text) {
   ccResultText = text; // 結果を保存
@@ -1733,8 +1765,13 @@ function parseCcSummary(text) {
   const suggestCount  = suggestMatch  ? parseInt(suggestMatch[1])  : 0;
   const grade = gradeMatch ? gradeMatch[1] : '';
 
+  // 文章ルール問題の件数も取得
+  const textRuleMatch = text.match(/文章ルール問題[：:]\s*(\d+)/);
+  const textRuleCount = textRuleMatch ? parseInt(textRuleMatch[1]) : 0;
+
   document.getElementById('cc-count-critical').textContent = criticalCount + ' 件';
   document.getElementById('cc-count-warning').textContent  = warningCount  + ' 件';
+  document.getElementById('cc-count-textrule').textContent = textRuleCount + ' 件';
   document.getElementById('cc-count-suggest').textContent  = suggestCount  + ' 件';
 
   const gradeEl = document.getElementById('cc-grade');
@@ -1752,6 +1789,156 @@ function parseCcSummary(text) {
     fixBtnContainer.style.display = 'block';
   } else {
     fixBtnContainer.style.display = 'none';
+  }
+
+  // chapter.txt修正ボタンを表示（対象ファイルが指定されており、問題や提案がある場合）
+  const fixChapterContainer = document.getElementById('cc-fix-chapter-btn-container');
+  const fixTargetFileName = document.getElementById('cc-fix-target-file-name');
+
+  // 対象ファイルが指定されており、かつ何らかの問題や提案がある場合
+  if (ccTargetFile && ccScope !== 'notation' && (textRuleCount > 0 || criticalCount > 0 || warningCount > 0 || suggestCount > 0)) {
+    fixChapterContainer.style.display = 'block';
+    fixTargetFileName.textContent = ccTargetFile;
+  } else {
+    fixChapterContainer.style.display = 'none';
+  }
+
+  // 表記揺れ一括修正ボタンを表示（表記揺れチェックで問題が見つかった場合）
+  const fixNotationContainer = document.getElementById('cc-fix-notation-btn-container');
+
+  // 表記揺れチェックスコープで、表記揺れが検出された場合
+  if (ccScope === 'notation') {
+    // 表記揺れのカウントを取得（表記ゆれの出力形式に幅があるため、複数パターンを許容）
+    function extractCount(patterns) {
+      for (const p of patterns) {
+        const m = text.match(p);
+        if (m) return parseInt(m[1], 10) || 0;
+      }
+      return 0;
+    }
+
+    // 重大な表記揺れ（固有名詞）
+    const notationCriticalCount = extractCount([
+      /重大な表記揺れ[（(]\s*固有名詞\s*[)）]\s*[：:|｜]\s*(\d+)/,                 // 見出しや箇条書き 「…： 5」
+      /\|\s*重大な表記揺れ[（(]\s*固有名詞\s*[)）]\s*\|\s*(\d+)\s*件?\s*\|?/,   // Markdown表形式 「| … | 5件 |」
+      /重大な表記揺れ[（(]\s*固有名詞\s*[)）][^\d\n\r]*?(\d+)\s*件/                 // その他 「… 5件」
+    ]);
+
+    // 一般用語の表記揺れ
+    const notationGeneralCount = extractCount([
+      /一般用語の表記揺れ\s*[：:|｜]\s*(\d+)/,
+      /\|\s*一般用語の表記揺れ\s*\|\s*(\d+)\s*件?\s*\|?/,
+      /一般用語の表記揺れ[^\d\n\r]*?(\d+)\s*件/
+    ]);
+
+    // 数字・記号の表記揺れ（中点の種類や空白差異を許容）
+    const notationNumberCount = extractCount([
+      /数字[・･・]\s*記号の表記揺れ\s*[：:|｜]\s*(\d+)/,
+      /\|\s*数字[・･・]\s*記号の表記揺れ\s*\|\s*(\d+)\s*件?\s*\|?/,
+      /数字[・･・]\s*記号の表記揺れ[^\d\n\r]*?(\d+)\s*件/
+    ]);
+
+    if (notationCriticalCount > 0 || notationGeneralCount > 0 || notationNumberCount > 0) {
+      fixNotationContainer.style.display = 'block';
+    } else {
+      // 直接件数が抽出できなくても、該当セクションの存在でボタンを出すフォールバック
+      const hasNotationSection = /重大な表記揺れ|一般用語の表記揺れ|数字[・･・]記号の表記揺れ/.test(text);
+      fixNotationContainer.style.display = hasNotationSection ? 'block' : 'none';
+    }
+  } else {
+    fixNotationContainer.style.display = 'none';
+  }
+}
+
+// ---- 表記揺れ一括修正 ----
+
+async function fixNotationIssues() {
+  if (!currentProject) {
+    showToast('プロジェクトが選択されていません', '#a06020');
+    return;
+  }
+
+  if (!ccResultText) {
+    showToast('表記揺れチェック結果がありません', '#a06020');
+    return;
+  }
+
+  if (!confirm('全chapter.txtファイルの表記揺れを一括修正します。\n各ファイルが順次上書き保存されますが、よろしいですか？\n\n※ファイル数が多い場合、処理に時間がかかります。')) {
+    return;
+  }
+
+  const btn = document.getElementById('cc-fix-notation-btn');
+  const progressContainer = document.getElementById('cc-fix-notation-progress');
+  const progressBar = document.getElementById('cc-fix-notation-progress-bar');
+  const progressLabel = document.getElementById('cc-fix-notation-progress-label');
+  const originalText = btn.textContent;
+
+  btn.disabled = true;
+  btn.textContent = '⏳ 修正中…';
+  progressContainer.style.display = 'block';
+  progressBar.style.width = '0%';
+  progressLabel.textContent = '処理を開始しています...';
+
+  try {
+    const res = await fetch('/api/claude/fix_notation_issues', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project: currentProject,
+        series: currentSeries || undefined,
+        check_result: ccResultText
+      })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || '修正に失敗しました', '#c0392b');
+      progressContainer.style.display = 'none';
+      return;
+    }
+
+    // 成功メッセージの表示
+    const fixedCount = data.fixed_files ? data.fixed_files.length : 0;
+    const errorCount = data.errors ? data.errors.length : 0;
+
+    progressBar.style.width = '100%';
+    progressLabel.textContent = `完了: ${fixedCount}ファイル修正`;
+
+    let message = `✅ 表記揺れ修正完了\n修正されたファイル: ${fixedCount}件`;
+
+    if (data.fixed_files && data.fixed_files.length > 0) {
+      message += '\n\n修正ファイル:\n' + data.fixed_files.join('\n');
+    }
+
+    if (errorCount > 0) {
+      message += `\n\n⚠️ エラー: ${errorCount}件\n` + data.errors.join('\n');
+    }
+
+    showToast(message, fixedCount > 0 ? '#27ae60' : '#e67e22');
+
+    // ファイルリストを更新
+    if (fixedCount > 0) {
+      loadFiles();
+
+      // 現在開いているファイルが修正された場合、リロード
+      if (currentFile && data.fixed_files && data.fixed_files.includes(currentFile)) {
+        openFile(currentFile);
+      }
+    }
+
+    // プログレスバーを少し表示してから非表示
+    setTimeout(() => {
+      progressContainer.style.display = 'none';
+    }, 2000);
+
+  } catch (err) {
+    console.error('表記揺れ修正エラー:', err);
+    showToast('修正中にエラーが発生しました: ' + err.message, '#c0392b');
+    progressContainer.style.display = 'none';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
   }
 }
 
@@ -1803,7 +1990,74 @@ async function fixPlotInconsistencies() {
 
     // 修正後のplot.mdをエディタに開く（オプション）
     if (confirm('修正後のplot.mdをエディタで開きますか？')) {
-      selectFile('plot.md');
+      openFile('plot.md');
+    }
+
+  } catch (e) {
+    showToast('通信エラー: ' + e.message, '#c0392b');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+// ---- 章ファイル自動修正 ----
+
+async function fixChapterFile() {
+  if (!currentProject) {
+    showToast('プロジェクトが選択されていません', '#a06020');
+    return;
+  }
+
+  // 整合性チェックで指定された対象ファイルを使用
+  const chapterFile = ccTargetFile;
+  if (!chapterFile) {
+    showToast('修正対象ファイルが指定されていません', '#a06020');
+    return;
+  }
+
+  if (!ccResultText) {
+    showToast('整合性チェック結果がありません', '#a06020');
+    return;
+  }
+
+  if (!confirm(`${chapterFile}の内容を自動修正します。上書き保存されますが、よろしいですか？`)) {
+    return;
+  }
+
+  const btn = document.getElementById('cc-fix-chapter-btn');
+  const originalText = btn.textContent;
+
+  btn.disabled = true;
+  btn.textContent = '⏳ 修正中…（最大30分）';
+
+  try {
+    const res = await fetch('/api/claude/fix_chapter_file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project: currentProject,
+        series: currentSeries || undefined,
+        chapter_file: chapterFile,
+        check_result: ccResultText
+      })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || '修正に失敗しました', '#c0392b');
+      return;
+    }
+
+    showToast(`✅ ${chapterFile}を修正しました`, '#27ae60');
+
+    // ファイルリストを更新
+    loadFiles();
+
+    // 修正後のファイルをエディタで開く（オプション）
+    if (confirm(`修正後の${chapterFile}をエディタで開きますか？`)) {
+      openFile(chapterFile);
     }
 
   } catch (e) {
