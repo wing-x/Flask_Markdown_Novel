@@ -1717,16 +1717,20 @@ async function runConsistencyCheck() {
 
 // ---- 結果パース・サマリーカード更新 ----
 
+let ccResultText = ''; // 整合性チェック結果を保存
+
 function parseCcSummary(text) {
+  ccResultText = text; // 結果を保存
+
   // 重大な問題の件数
   const criticalMatch = text.match(/重大な問題[：:]\s*(\d+)/);
   const warningMatch  = text.match(/要確認事項[：:]\s*(\d+)/);
   const suggestMatch  = text.match(/改善提案[：:]\s*(\d+)/);
   const gradeMatch    = text.match(/総合評価[：:]\s*([ABCD])/);
 
-  const criticalCount = criticalMatch ? parseInt(criticalMatch[1]) : '?';
-  const warningCount  = warningMatch  ? parseInt(warningMatch[1])  : '?';
-  const suggestCount  = suggestMatch  ? parseInt(suggestMatch[1])  : '?';
+  const criticalCount = criticalMatch ? parseInt(criticalMatch[1]) : 0;
+  const warningCount  = warningMatch  ? parseInt(warningMatch[1])  : 0;
+  const suggestCount  = suggestMatch  ? parseInt(suggestMatch[1])  : 0;
   const grade = gradeMatch ? gradeMatch[1] : '';
 
   document.getElementById('cc-count-critical').textContent = criticalCount + ' 件';
@@ -1741,4 +1745,71 @@ function parseCcSummary(text) {
   }
 
   document.getElementById('cc-summary-card').style.display = 'flex';
+
+  // plot.md修正ボタンを表示（重大な問題または要確認事項がある場合のみ）
+  const fixBtnContainer = document.getElementById('cc-fix-btn-container');
+  if (criticalCount > 0 || warningCount > 0) {
+    fixBtnContainer.style.display = 'block';
+  } else {
+    fixBtnContainer.style.display = 'none';
+  }
+}
+
+// ---- plot.md自動修正 ----
+
+async function fixPlotInconsistencies() {
+  if (!currentProject) {
+    showToast('プロジェクトが選択されていません', '#a06020');
+    return;
+  }
+
+  if (!ccResultText) {
+    showToast('整合性チェック結果がありません', '#a06020');
+    return;
+  }
+
+  if (!confirm('plot.mdの内容を自動修正します。上書き保存されますが、よろしいですか？')) {
+    return;
+  }
+
+  const btn = document.getElementById('cc-fix-plot-btn');
+  const originalText = btn.textContent;
+
+  btn.disabled = true;
+  btn.textContent = '⏳ 修正中…';
+
+  try {
+    const res = await fetch('/api/claude/fix_plot_inconsistencies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project: currentProject,
+        series: currentSeries || undefined,
+        inconsistencies: ccResultText
+      })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || '修正に失敗しました', '#c0392b');
+      return;
+    }
+
+    showToast('✅ plot.mdを修正しました', '#27ae60');
+
+    // ファイルリストを更新
+    loadFiles();
+
+    // 修正後のplot.mdをエディタに開く（オプション）
+    if (confirm('修正後のplot.mdをエディタで開きますか？')) {
+      selectFile('plot.md');
+    }
+
+  } catch (e) {
+    showToast('通信エラー: ' + e.message, '#c0392b');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
 }

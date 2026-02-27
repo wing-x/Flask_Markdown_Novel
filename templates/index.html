@@ -316,6 +316,16 @@
         <!-- 結果本文（Markdown レンダリング） -->
         <div id="cc-result-body" class="cc-result-body" style="display:none;"></div>
 
+        <!-- plot.md修正ボタン -->
+        <div id="cc-fix-btn-container" style="display:none; margin-top: 20px; text-align: center;">
+          <button id="cc-fix-plot-btn" class="fs-add-btn" onclick="fixPlotInconsistencies()">
+            🔧 plot.mdを自動修正
+          </button>
+          <p style="font-size: 12px; color: #666; margin-top: 8px;">
+            ※ 指摘された矛盾をAIが自動的に修正し、plot.mdを上書きします
+          </p>
+        </div>
+
       </div>
     </div>
   </div>

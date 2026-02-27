@@ -1897,6 +1897,113 @@ def run_consistency_check():
     )
 
 
+@app.route('/api/claude/fix_plot_inconsistencies', methods=['POST'])
+def fix_plot_inconsistencies():
+    """plot.mdの矛盾箇所を自動修正する"""
+    data = request.json
+    project = data.get('project', '')
+    series = data.get('series', '') or None
+    inconsistencies = data.get('inconsistencies', '')  # 整合性チェック結果のテキスト
+
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    if not series:
+        series = detect_series_from_project(project)
+
+    project_dir = os.path.join(BASE_DIR, project)
+    plot_path = os.path.join(project_dir, 'plot.md')
+
+    if not os.path.exists(plot_path):
+        return jsonify({'error': 'plot.mdが見つかりません'}), 404
+
+    # 現在のplot.mdを読み込む
+    with open(plot_path, 'r', encoding='utf-8') as f:
+        current_plot = f.read()
+
+    # コンテキスト収集
+    series_ctx_parts = []
+    if series:
+        series_dir = get_series_dir(series)
+
+        bible_path = os.path.join(series_dir, 'bible.md')
+        if os.path.exists(bible_path):
+            content = _read_and_trim(bible_path, 5000)
+            series_ctx_parts.append(f'### [世界設定バイブル]\n{content}')
+
+        chars_path = os.path.join(series_dir, 'characters_master.md')
+        if os.path.exists(chars_path):
+            content = _read_and_trim(chars_path, 5000)
+            series_ctx_parts.append(f'### [キャラクターマスター]\n{content}')
+
+    # 他の設定ファイルを読み込む
+    volume_ctx_parts = []
+    for fname in ['character.md', 'worldbuilding.md', 'timeline.md']:
+        fpath = os.path.join(project_dir, fname)
+        content = _read_and_trim(fpath, 3000)
+        if content:
+            volume_ctx_parts.append(f'### [{fname}]\n{content}')
+
+    series_section = ''
+    if series_ctx_parts:
+        series_section = '## シリーズ聖典\n\n' + '\n\n'.join(series_ctx_parts)
+
+    volume_section = '## この巻の設定ファイル\n\n' + '\n\n'.join(volume_ctx_parts) if volume_ctx_parts else ''
+
+    prompt = f"""あなたは長編小説シリーズの専任編集者です。
+以下の整合性チェック結果に基づいて、plot.mdの矛盾箇所を修正してください。
+
+## 整合性チェック結果
+{inconsistencies}
+
+{series_section}
+
+{volume_section}
+
+## 現在のplot.md
+{current_plot}
+
+---
+
+## 修正指示
+
+上記の整合性チェック結果で指摘された矛盾箇所を、シリーズ聖典や設定ファイルと整合するように修正してください。
+
+**重要**:
+- 修正後のplot.md全文を出力してください
+- markdown形式を保持してください
+- 矛盾が指摘されていない部分はそのまま維持してください
+- 冒頭に説明や前置きを付けず、plot.mdの内容のみを出力してください
+- ```markdown などのコードブロックも不要です。plot.mdの内容そのものを出力してください
+"""
+
+    try:
+        message = client.messages.create(
+            model='claude-sonnet-4-6',
+            max_tokens=8000,
+            messages=[{'role': 'user', 'content': prompt}],
+        )
+        corrected_plot = message.content[0].text
+
+        # コードブロックで囲まれている場合は除去
+        import re
+        corrected_plot = re.sub(r'^```(?:markdown)?\s*\n', '', corrected_plot)
+        corrected_plot = re.sub(r'\n```\s*$', '', corrected_plot)
+
+        # plot.mdを上書き
+        with open(plot_path, 'w', encoding='utf-8') as f:
+            f.write(corrected_plot)
+
+        return jsonify({
+            'success': True,
+            'message': 'plot.mdを修正しました',
+            'corrected_content': corrected_plot
+        })
+
+    except Exception as e:
+        return jsonify({'error': f'修正中にエラーが発生しました: {str(e)}'}), 500
+
+
 @app.route('/api/claude/generate', methods=['POST'])
 def generate():
     data = request.json
