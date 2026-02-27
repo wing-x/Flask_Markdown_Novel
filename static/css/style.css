@@ -363,15 +363,16 @@ body {
 
 #claude-panel-body {
   padding: 0 18px 12px;
-  overflow: hidden;
+  overflow-y: auto;
   transition: max-height 0.25s ease, opacity 0.2s ease;
-  max-height: 400px;
+  max-height: 500px;
   opacity: 1;
 }
 #claude-panel-body.collapsed {
   max-height: 0;
   opacity: 0;
   padding-bottom: 0;
+  overflow: hidden;
 }
 
 #claude-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; margin-top: 2px; }
@@ -423,7 +424,11 @@ body {
 #claude-run-btn:hover:not(:disabled) { background: #2a5ab8; }
 #claude-run-btn:disabled { opacity: 0.35; cursor: default; }
 
-#claude-result-area { margin-top: 8px; max-height: 200px; overflow-y: auto; }
+#claude-result-area {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+}
 
 #claude-result {
   padding: 12px;
@@ -435,19 +440,23 @@ body {
   white-space: pre-wrap;
   color: #3a3a5a;
   display: none;
+  max-height: 300px;
+  overflow-y: auto;
+  margin-bottom: 8px;
 }
 
 #insert-result-btn {
-  margin-top: 6px;
-  padding: 5px 16px;
+  padding: 8px 16px;
   background: #e8f8ee;
   border: 1px solid #80d0a0;
   border-radius: 6px;
   color: #1a7a40;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   transition: background 0.2s;
+  flex-shrink: 0;
+  display: none;
 }
 #insert-result-btn:hover { background: #c8f0d8; }
 
@@ -510,6 +519,46 @@ body {
   color: #c0a0b8;
   line-height: 1.4;
   padding-left: 2px;
+}
+
+/* ---- ★ plot_draft → timeline / worldbuilding ボタン ---- */
+#plot-draft-to-files-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+#plot-draft-to-timeline-btn,
+#plot-draft-to-worldbuilding-btn {
+  width: 100%;
+  padding: 9px 12px;
+  background: #f8f0ff;
+  border: 1.5px solid #d0a0e0;
+  border-radius: 8px;
+  color: #7a2090;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.01em;
+}
+
+#plot-draft-to-timeline-btn:hover:not(:disabled),
+#plot-draft-to-worldbuilding-btn:hover:not(:disabled) {
+  background: #f0d8ff;
+  border-color: #b070d0;
+  transform: translateX(2px);
+}
+
+#plot-draft-to-timeline-btn:disabled,
+#plot-draft-to-worldbuilding-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  transform: none;
 }
 
 /* ---- ★ plot.md → キャッチコピー ボタン ---- */

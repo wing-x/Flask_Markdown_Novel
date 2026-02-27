@@ -58,6 +58,18 @@
           <p class="draft-hint">plot_draft.md を用意してから実行してください</p>
         </div>
 
+        <!-- ★ plot_draft → timeline / worldbuilding 生成ボタン -->
+        <div id="plot-draft-to-files-section">
+          <p class="section-label">plot_draft から生成</p>
+          <button id="plot-draft-to-timeline-btn" onclick="generateTimelineFromDraft()" title="plot_draft.md から timeline.md を生成します">
+            📅 timeline.md 作成
+          </button>
+          <button id="plot-draft-to-worldbuilding-btn" onclick="generateWorldbuildingFromDraft()" title="plot_draft.md から worldbuilding.md を生成します">
+            🌍 worldbuilding.md 作成
+          </button>
+          <p class="draft-hint">plot_draft.md から各種設定ファイルを生成します</p>
+        </div>
+
         <!-- ★ plot.md → キャッチコピー生成ボタン -->
         <div id="plot-to-catchcopy-section">
           <p class="section-label">キャッチコピー生成</p>
@@ -121,7 +133,7 @@
         <div id="claude-panel-body">
         <div id="claude-buttons">
           <button class="claude-btn" onclick="claudeAction('generate_character')">👤 キャラクター生成</button>
-          <button class="claude-btn" onclick="claudeAction('plot_development')">📖 プロット展開案</button>
+          <button class="claude-btn" onclick="claudeAction('plot_draft')">📖 プロット展開案</button>
           <button class="claude-btn" onclick="claudeAction('generate_timeline')">📅 タイムライン生成</button>
           <button class="claude-btn" onclick="claudeAction('generate_worldbuilding')">🌍 世界観設定生成</button>
           <button class="claude-btn" onclick="claudeAction('refine_text')">✏️ 文章推敲</button>
@@ -136,12 +148,30 @@
             <option value="長編">長編 (10万字前後 / 20-30章)</option>
           </select>
         </div>
-        <div id="character-role-selector" style="display:none; margin: 10px 0;">
-          <label style="font-weight: bold; display: block; margin-bottom: 5px;">👤 キャラクターの役割:</label>
-          <select id="character-role-select" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
-            <option value="メインキャラクター" selected>メインキャラクター</option>
-            <option value="サブキャラクター">サブキャラクター</option>
+        <div id="character-generation-options" style="display:none; margin: 10px 0;">
+          <label style="font-weight: bold; display: block; margin-bottom: 5px;">👤 キャラクター生成モード:</label>
+          <select id="character-mode-select" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ccc; margin-bottom: 10px;" onchange="toggleCharacterMode()">
+            <option value="new">新規作成</option>
+            <option value="from_draft">plot_draftから生成</option>
           </select>
+
+          <!-- 新規作成モード -->
+          <div id="character-new-mode" style="display:block;">
+            <label style="font-weight: bold; display: block; margin-bottom: 5px;">役割:</label>
+            <select id="character-role-select" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
+              <option value="メインキャラクター" selected>メインキャラクター</option>
+              <option value="サブキャラクター">サブキャラクター</option>
+            </select>
+          </div>
+
+          <!-- plot_draftから生成モード -->
+          <div id="character-draft-mode" style="display:none;">
+            <button id="load-draft-characters-btn" onclick="loadDraftCharacters()" style="width: 100%; padding: 8px; margin-bottom: 10px; background: #f0f4ff; border: 1px solid #c8d8f8; border-radius: 4px; cursor: pointer;">キャラクターリストを読み込む</button>
+            <label style="font-weight: bold; display: block; margin-bottom: 5px;">キャラクター選択:</label>
+            <select id="draft-character-select" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
+              <option value="">-- キャラクターを選択 --</option>
+            </select>
+          </div>
         </div>
         <div id="claude-input-area">
           <textarea id="claude-context" placeholder="追加の指示・要望を入力（任意）"></textarea>

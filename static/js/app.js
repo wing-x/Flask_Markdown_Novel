@@ -336,6 +336,82 @@ async function generateChapters() {
   }
 }
 
+// ---- ★ plot_draft → timeline.md 生成 ----
+async function generateTimelineFromDraft() {
+  if (!currentProject) {
+    showToast('先にプロジェクトを選択してください', '#a06020');
+    return;
+  }
+
+  const btn = document.getElementById('plot-draft-to-timeline-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 生成中…';
+
+  try {
+    const res = await fetch('/api/claude/plot_draft_to_timeline', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: currentProject })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      return;
+    }
+
+    // ファイルリストを更新して timeline.md を開く
+    await loadFiles();
+    await openFile('timeline.md');
+    showToast('📅 timeline.md を生成・保存しました ✅', '#1a7a40');
+
+  } catch (e) {
+    showToast('通信エラーが発生しました', '#c0392b');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '📅 timeline.md 作成';
+  }
+}
+
+// ---- ★ plot_draft → worldbuilding.md 生成 ----
+async function generateWorldbuildingFromDraft() {
+  if (!currentProject) {
+    showToast('先にプロジェクトを選択してください', '#a06020');
+    return;
+  }
+
+  const btn = document.getElementById('plot-draft-to-worldbuilding-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 生成中…';
+
+  try {
+    const res = await fetch('/api/claude/plot_draft_to_worldbuilding', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: currentProject })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      return;
+    }
+
+    // ファイルリストを更新して worldbuilding.md を開く
+    await loadFiles();
+    await openFile('worldbuilding.md');
+    showToast('🌍 worldbuilding.md を生成・保存しました ✅', '#1a7a40');
+
+  } catch (e) {
+    showToast('通信エラーが発生しました', '#c0392b');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🌍 worldbuilding.md 作成';
+  }
+}
+
 // ---- ★ plot.md → キャッチコピー生成 ----
 async function generateCatchcopy() {
   if (!currentProject) {
@@ -442,18 +518,79 @@ function claudeAction(action) {
 
   // プロット展開案の場合のみ執筆量選択UIを表示
   const lengthSelector = document.getElementById('plot-length-selector');
-  if (action === 'plot_development') {
+  if (action === 'plot_draft') {
     lengthSelector.style.display = 'block';
   } else {
     lengthSelector.style.display = 'none';
   }
 
-  // キャラクター生成の場合のみ役割選択UIを表示
-  const roleSelector = document.getElementById('character-role-selector');
+  // キャラクター生成の場合のみ生成オプションUIを表示
+  const characterOptions = document.getElementById('character-generation-options');
   if (action === 'generate_character') {
-    roleSelector.style.display = 'block';
+    characterOptions.style.display = 'block';
   } else {
-    roleSelector.style.display = 'none';
+    characterOptions.style.display = 'none';
+  }
+}
+
+function toggleCharacterMode() {
+  const mode = document.getElementById('character-mode-select').value;
+  const newMode = document.getElementById('character-new-mode');
+  const draftMode = document.getElementById('character-draft-mode');
+
+  if (mode === 'new') {
+    newMode.style.display = 'block';
+    draftMode.style.display = 'none';
+  } else {
+    newMode.style.display = 'none';
+    draftMode.style.display = 'block';
+  }
+}
+
+async function loadDraftCharacters() {
+  if (!currentProject) {
+    showToast('先にプロジェクトを選択してください', '#a06020');
+    return;
+  }
+
+  const btn = document.getElementById('load-draft-characters-btn');
+  btn.disabled = true;
+  btn.textContent = '読み込み中...';
+
+  try {
+    const res = await fetch('/api/claude/plot_draft_to_characters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: currentProject })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      return;
+    }
+
+    const select = document.getElementById('draft-character-select');
+    select.innerHTML = '<option value="">-- キャラクターを選択 --</option>';
+
+    if (data.characters && data.characters.length > 0) {
+      data.characters.forEach(char => {
+        const option = document.createElement('option');
+        option.value = char;
+        option.textContent = char;
+        select.appendChild(option);
+      });
+      showToast(`${data.characters.length}人のキャラクターを読み込みました`, '#1a7a40');
+    } else {
+      showToast('plot_draftにキャラクターが見つかりませんでした', '#a06020');
+    }
+
+  } catch (e) {
+    showToast('通信エラーが発生しました', '#c0392b');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'キャラクターリストを読み込む';
   }
 }
 
@@ -475,13 +612,52 @@ async function runClaudeAction() {
     context
   };
 
-  if (selectedAction === 'plot_development') {
+  if (selectedAction === 'plot_draft') {
     requestBody.length = document.getElementById('plot-length-select').value;
   }
 
-  // キャラクター生成の場合は役割を取得
+  // キャラクター生成の場合は生成モードに応じて処理
   if (selectedAction === 'generate_character') {
-    requestBody.character_role = document.getElementById('character-role-select').value;
+    const mode = document.getElementById('character-mode-select').value;
+
+    if (mode === 'new') {
+      // 新規作成モード
+      requestBody.character_role = document.getElementById('character-role-select').value;
+    } else {
+      // plot_draftから生成モード
+      const characterName = document.getElementById('draft-character-select').value;
+      if (!characterName) {
+        showToast('キャラクターを選択してください', '#a03020');
+        btn.disabled = false;
+        btn.textContent = '実行';
+        return;
+      }
+
+      // 別のAPIエンドポイントを使用
+      const charRes = await fetch('/api/claude/generate_character_from_draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project: currentProject,
+          character_name: characterName
+        })
+      });
+
+      btn.disabled = false;
+      btn.textContent = '実行';
+
+      if (charRes.ok) {
+        const charData = await charRes.json();
+        claudeResult = charData.result;
+        const resultEl = document.getElementById('claude-result');
+        resultEl.style.display = 'block';
+        resultEl.textContent = claudeResult;
+        document.getElementById('insert-result-btn').style.display = 'inline-block';
+      } else {
+        showToast('Claude APIエラーが発生しました', '#a03020');
+      }
+      return;
+    }
   }
 
   const res = await fetch('/api/claude/generate', {

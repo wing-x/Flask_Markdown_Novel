@@ -454,6 +454,364 @@ def draft_to_plot():
 
     return jsonify({'content': generated, 'saved': True})
 
+@app.route('/api/claude/plot_draft_to_timeline', methods=['POST'])
+def plot_draft_to_timeline():
+    """plot_draft.md からタイムラインを生成して timeline.md に保存する"""
+    data = request.json
+    project = data.get('project', '')
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    project_dir = os.path.join(BASE_DIR, project)
+
+    # plot_draft.md を読み込む
+    draft_path = os.path.join(project_dir, 'plot_draft.md')
+    if not os.path.exists(draft_path):
+        return jsonify({'error': 'plot_draft.md がプロジェクト内に見つかりません'}), 404
+
+    with open(draft_path, 'r', encoding='utf-8') as f:
+        draft_content = f.read().strip()
+
+    if not draft_content or draft_content == '# plot_draft':
+        return jsonify({'error': 'plot_draft.md に内容が書かれていません'}), 400
+
+    prompt = f"""以下のプロット展開案を読み込み、詳細なタイムラインを作成してください。
+
+## プロット展開案
+{draft_content}
+
+## 出力形式
+
+以下の形式に厳密に従って、タイムラインを作成してください：
+
+# タイムライン
+
+## 物語前史
+
+- [重要な背景事件]
+- [キャラクターの過去の出来事]
+
+## 第一幕（または第一部）
+
+| 時期 | 出来事 | 関連キャラクター |
+|------|--------|------------------|
+| [時期] | [出来事の詳細] | [キャラクター名] |
+
+## 第二幕（または第二部）
+
+| 時期 | 出来事 | 関連キャラクター |
+|------|--------|------------------|
+| [時期] | [出来事の詳細] | [キャラクター名] |
+
+（プロットの構造に応じて幕/部の数を調整）
+
+## 伏線メモ
+
+| 伏線 | 設置時期 | 回収時期 | 備考 |
+|------|----------|----------|------|
+| [伏線の内容] | [章/場面] | [章/場面] | [詳細] |
+
+## キャラクター成長の段階
+
+### [キャラクター名]
+- 物語開始時：[状態]
+- 転換点1（第○章）：[変化]
+- 転換点2（第○章）：[変化]
+- 物語終了時：[状態]
+
+### 指示事項
+
+1. プロット展開案の章構成に基づいて、時系列を整理してください
+2. 各出来事の時期を具体的に記述してください
+3. 伏線の設置と回収のタイミングを明確にしてください
+4. 主要キャラクターの成長段階を追跡してください
+5. マークダウン形式で出力し、上記のフォーマットを厳守してください"""
+
+    message = client.messages.create(
+        model='claude-sonnet-4-6',
+        max_tokens=10000,
+        messages=[{'role': 'user', 'content': prompt}],
+        timeout=600.0
+    )
+
+    generated = message.content[0].text.strip()
+
+    # timeline.md として保存
+    timeline_path = os.path.join(project_dir, 'timeline.md')
+    with open(timeline_path, 'w', encoding='utf-8') as f:
+        f.write(generated)
+
+    return jsonify({'content': generated, 'saved': True})
+
+@app.route('/api/claude/plot_draft_to_worldbuilding', methods=['POST'])
+def plot_draft_to_worldbuilding():
+    """plot_draft.md から世界観設定を生成して worldbuilding.md に保存する"""
+    data = request.json
+    project = data.get('project', '')
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    project_dir = os.path.join(BASE_DIR, project)
+
+    # plot_draft.md を読み込む
+    draft_path = os.path.join(project_dir, 'plot_draft.md')
+    if not os.path.exists(draft_path):
+        return jsonify({'error': 'plot_draft.md がプロジェクト内に見つかりません'}), 404
+
+    with open(draft_path, 'r', encoding='utf-8') as f:
+        draft_content = f.read().strip()
+
+    if not draft_content or draft_content == '# plot_draft':
+        return jsonify({'error': 'plot_draft.md に内容が書かれていません'}), 400
+
+    prompt = f"""以下のプロット展開案を読み込み、物語の舞台となる世界観設定を作成してください。
+
+## プロット展開案
+{draft_content}
+
+## 出力形式
+
+以下の形式に厳密に従って、世界観設定を作成してください：
+
+# 世界観設定
+
+## 基本設定
+
+- 時代・時期：[時代設定]
+- 舞台：[場所の説明]
+- 技術レベル：[現代/未来/過去など]
+
+## 社会・文化
+
+### 政治体制
+[政治体制の説明]
+
+### 文化・風習
+[文化や風習の説明]
+
+### 教育制度（該当する場合）
+[教育制度の説明]
+
+## 地理
+
+### 主要な場所
+
+**[場所名1]**
+- 説明：[詳細]
+- 物語での役割：[役割]
+
+**[場所名2]**
+- 説明：[詳細]
+- 物語での役割：[役割]
+
+## 歴史
+
+### 重要な出来事
+[過去の重要な出来事]
+
+## 特殊なルール・法則
+
+### [該当する特殊要素があれば記載]
+[説明]
+
+### その他のルール
+[社会のルールや慣習]
+
+## 経済・産業
+
+[経済状況や主要産業]
+
+## 宗教・信仰
+
+[宗教や信仰について]
+
+## 物語固有の設定
+
+[この物語特有の世界観要素]
+
+### 指示事項
+
+1. プロット展開案から読み取れる世界観要素を抽出してください
+2. 物語の舞台となる場所や組織について具体的に記述してください
+3. プロットで言及されている社会構造や制度を詳細化してください
+4. 物語のテーマや雰囲気に合った世界観を構築してください
+5. マークダウン形式で出力し、上記のフォーマットを厳守してください"""
+
+    message = client.messages.create(
+        model='claude-sonnet-4-6',
+        max_tokens=10000,
+        messages=[{'role': 'user', 'content': prompt}],
+        timeout=600.0
+    )
+
+    generated = message.content[0].text.strip()
+
+    # worldbuilding.md として保存
+    worldbuilding_path = os.path.join(project_dir, 'worldbuilding.md')
+    with open(worldbuilding_path, 'w', encoding='utf-8') as f:
+        f.write(generated)
+
+    return jsonify({'content': generated, 'saved': True})
+
+@app.route('/api/claude/plot_draft_to_characters', methods=['POST'])
+def plot_draft_to_characters():
+    """plot_draft.md から追加キャラクターリストを抽出する"""
+    data = request.json
+    project = data.get('project', '')
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    project_dir = os.path.join(BASE_DIR, project)
+
+    # plot_draft.md を読み込む
+    draft_path = os.path.join(project_dir, 'plot_draft.md')
+    if not os.path.exists(draft_path):
+        return jsonify({'error': 'plot_draft.md がプロジェクト内に見つかりません'}), 404
+
+    with open(draft_path, 'r', encoding='utf-8') as f:
+        draft_content = f.read().strip()
+
+    if not draft_content or draft_content == '# plot_draft':
+        return jsonify({'error': 'plot_draft.md に内容が書かれていません'}), 400
+
+    prompt = f"""以下のプロット展開案から、「登場人物の追加設定」セクションに記載されているキャラクターの名前を全て抽出してください。
+
+## プロット展開案
+{draft_content}
+
+## 抽出方法
+
+1. 「## 登場人物の追加設定」というセクションを探してください
+2. その配下にある「###」で始まる見出しからキャラクター名を抽出してください
+3. キャラクター名は通常「名前（読み仮名）」の形式で記載されています
+4. 読み仮名の部分は除外し、漢字表記の名前のみを抽出してください
+
+例：「### 東條 蒼（とうじょう あおい）」→「東條 蒼」
+
+## 出力形式
+
+キャラクター名のみをJSON配列形式で出力してください。
+例: ["東條 蒼", "瀬川 文子", "神谷 遥"]
+
+- キャラクター名のみを抽出し、説明文は含めないでください
+- 読み仮名や職業などの補足情報は含めないでください
+- 「登場人物の追加設定」セクションが存在しない場合は空の配列 [] を返してください
+- JSON配列のみを出力し、他の説明文は一切不要です"""
+
+    message = client.messages.create(
+        model='claude-sonnet-4-6',
+        max_tokens=1000,
+        messages=[{'role': 'user', 'content': prompt}],
+        timeout=60.0
+    )
+
+    generated = message.content[0].text.strip()
+
+    # JSON形式のレスポンスをパース
+    try:
+        import json
+        import re
+
+        # ```json などのマークダウンコードブロックを除去
+        json_match = re.search(r'\[.*\]', generated, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
+            characters = json.loads(json_str)
+            return jsonify({'characters': characters})
+        else:
+            characters = json.loads(generated)
+            return jsonify({'characters': characters})
+    except Exception as e:
+        # デバッグ用にエラーメッセージを返す
+        return jsonify({'characters': [], 'debug': generated, 'error': str(e)})
+
+@app.route('/api/claude/generate_character_from_draft', methods=['POST'])
+def generate_character_from_draft():
+    """plot_draft.md の情報を元に特定のキャラクターの詳細設定を生成する"""
+    data = request.json
+    project = data.get('project', '')
+    character_name = data.get('character_name', '')
+
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    if not character_name:
+        return jsonify({'error': 'キャラクター名が指定されていません'}), 400
+
+    project_dir = os.path.join(BASE_DIR, project)
+
+    # plot_draft.md を読み込む
+    draft_path = os.path.join(project_dir, 'plot_draft.md')
+    if not os.path.exists(draft_path):
+        return jsonify({'error': 'plot_draft.md がプロジェクト内に見つかりません'}), 404
+
+    with open(draft_path, 'r', encoding='utf-8') as f:
+        draft_content = f.read().strip()
+
+    prompt = f"""以下のプロット展開案から「{character_name}」というキャラクターの情報を抽出し、詳細なキャラクタープロファイルを作成してください。
+
+## プロット展開案
+{draft_content}
+
+## 出力形式
+
+以下のフォーマットに厳密に従って、詳細なキャラクタープロファイルを作成してください：
+
+# キャラクター設定
+
+## 基本情報
+- 名前: {character_name}
+- 役割: (プロットから判断してメインキャラクターまたはサブキャラクター)
+- 年齢: (プロットに記載があれば使用、なければ推測)
+- 性別: (プロットから判断)
+- 職業: (プロットから判断)
+
+## 外見
+- 身長:
+- 体格:
+- 髪型・髪色:
+- 目の色:
+- 特徴的な外見:
+
+## 性格
+- 基本的な性格:
+- 長所:
+- 短所:
+- 癖・口癖:
+
+## 背景
+- 生い立ち:
+- 家族構成:
+- 重要な過去の出来事:
+
+## 目標・動機
+- 物語における目標:
+- その目標を持つ理由:
+
+## 人間関係
+- (プロットから読み取れる他キャラクターとの関係を記載)
+
+## その他
+- (プロットに記載されている追加情報)
+
+### 指示事項
+
+1. プロット展開案に記載されている{character_name}の情報を最大限活用してください
+2. プロットに記載がない項目は、物語の世界観とテーマに合わせて自然に補完してください
+3. キャラクターの物語での役割を明確にしてください
+4. マークダウン形式で出力し、説明文や前置きは不要です"""
+
+    message = client.messages.create(
+        model='claude-sonnet-4-6',
+        max_tokens=5000,
+        messages=[{'role': 'user', 'content': prompt}],
+        timeout=300.0
+    )
+
+    generated = message.content[0].text.strip()
+
+    return jsonify({'result': generated})
+
 @app.route('/api/claude/generate_catchcopy', methods=['POST'])
 def generate_catchcopy():
     """plot.md の内容を読み込み、魅力的なキャッチコピーを生成して catchcopy.md に保存する"""
@@ -882,7 +1240,7 @@ def generate():
 
 上記のフォーマットの各項目を埋めてください。マークダウン形式で出力し、説明文や前置きは不要です。""",
 
-        'plot_development': f"""以下のプロジェクト設定を参考に、プロット展開案を提案してください。
+        'plot_draft': f"""以下のプロジェクト設定を参考に、詳細なプロット展開案を提案してください。
 
 {ctx_text}
 
@@ -890,18 +1248,110 @@ def generate():
 {current_content}
 
 目標執筆量: {data.get('length', '中編')}
-- 短編: 5000文字前後（章数: 3-5章）
-- 中編: 5万文字前後（章数: 10-15章）
-- 長編: 10万文字前後（章数: 20-30章）
+- 短編: 5000文字前後（章数: 3-5章、部構造なし）
+- 中編: 5万文字前後（章数: 10-15章、2-3部構成）
+- 長編: 10万文字前後（章数: 20-30章、3-4部構成）
 
 追加の要望: {extra_context}
 
-指定された目標執筆量に適した章数と展開ペースで、以下を含むプロット展開を提案してください：
-- 次の展開案（複数）
-- 伏線の提案
-- クライマックスへの道筋
-- 読者を引きつけるポイント
-- 各章のおおよその文字数配分""",
+## 出力形式
+
+以下の形式に厳密に従って、詳細なプロット展開案を作成してください：
+
+# プロット展開案
+## 『タイトル（仮題）』
+
+---
+
+## 全体構造の概観
+
+**総文字数目標：[目標文字数]　全[章数]章構成**
+
+| ブロック | 章 | 機能 | 文字数目安 |
+|---|---|---|---|
+| 第一部「[部タイトル]」 | 第1〜[章数]章 | [機能説明] | 約[文字数] |
+| 第二部「[部タイトル]」 | 第[章数]〜[章数]章 | [機能説明] | 約[文字数] |
+（目標執筆量に応じて部数を調整）
+
+---
+
+## 物語の核心について
+
+展開の中心となる主題やテーマ、物語が提示する主要な問いについて説明してください。
+複数の展開案がある場合は、それぞれの強みとテーマへの寄与度を記載してください。
+
+---
+
+## 登場人物の追加設定（必要な場合）
+
+プロット上必要な未設定キャラクターがいる場合、ここに記載してください。
+
+---
+
+## 第一部「[部タイトル]」　第1〜[章数]章　約[文字数]
+
+### 第1章「[章タイトル]」　約[文字数]
+
+**主な展開：**
+この章で起こる出来事を具体的に記述してください。
+場面、登場人物の行動、会話の要点、感情の動きなどを含めてください。
+
+**ポイント：**
+- この章の物語上の役割
+- 伏線の配置
+- キャラクターの成長や変化
+
+---
+
+（以下、各章について同様の形式で記述）
+
+---
+
+## 伏線一覧と回収タイミング
+
+| 伏線 | 設置章 | 回収章 | 内容 |
+|---|---|---|---|
+| [伏線の内容] | 第[章数]章 | 第[章数]章 | [詳細] |
+
+---
+
+## 読者を引きつけるポイント
+
+**①[ポイント1のタイトル]**
+説明
+
+**②[ポイント2のタイトル]**
+説明
+
+（3〜5つ程度）
+
+---
+
+## 章ごとの文字数配分まとめ
+
+| 章 | タイトル（仮） | 目安文字数 |
+|---|---|---|
+| 第1章 | [タイトル] | [文字数] |
+| 第2章 | [タイトル] | [文字数] |
+（全章を記載）
+| **合計** | | **約[総文字数]** |
+
+---
+
+## 指示事項
+
+1. 目標執筆量に応じて部数と章数を適切に設定してください
+   - 短編: 部構造なし、3-5章
+   - 中編: 2-3部構成、10-15章
+   - 長編: 3-4部構成、20-30章
+
+2. 各章の展開は具体的かつ詳細に記述してください
+
+3. 伏線の設置と回収を明確にしてください
+
+4. キャラクター設定と世界観設定の内容を反映してください
+
+5. マークダウン形式で出力し、上記のフォーマットを厳守してください""",
 
         'generate_timeline': f"""以下のプロジェクト設定を参考に、詳細な物語タイムラインを作成してください。
 
