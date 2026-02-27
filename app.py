@@ -2004,6 +2004,147 @@ def fix_plot_inconsistencies():
         return jsonify({'error': f'修正中にエラーが発生しました: {str(e)}'}), 500
 
 
+@app.route('/api/claude/generate_spoiler_free_synopsis', methods=['POST'])
+def generate_spoiler_free_synopsis():
+    """ネタバレ防止あらすじを生成する"""
+    data = request.json
+    project = data.get('project', '')
+    series = data.get('series', '') or None
+    synopsis_type = data.get('synopsis_type', 'short')  # short, medium, long
+
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    if not series:
+        series = detect_series_from_project(project)
+
+    project_dir = os.path.join(BASE_DIR, project)
+    plot_path = os.path.join(project_dir, 'plot.md')
+
+    if not os.path.exists(plot_path):
+        return jsonify({'error': 'plot.mdが見つかりません'}), 404
+
+    # plot.mdを読み込む
+    with open(plot_path, 'r', encoding='utf-8') as f:
+        plot_content = f.read()
+
+    # 他の設定ファイルを読み込む
+    character_content = ''
+    worldbuilding_content = ''
+
+    char_path = os.path.join(project_dir, 'character.md')
+    if os.path.exists(char_path):
+        character_content = _read_and_trim(char_path, 3000)
+
+    world_path = os.path.join(project_dir, 'worldbuilding.md')
+    if os.path.exists(world_path):
+        worldbuilding_content = _read_and_trim(world_path, 3000)
+
+    # 巻メタ情報
+    vol_order = '?'
+    vol_title = project
+    if series:
+        meta = get_series_meta(series)
+        vol_info = next((v for v in meta.get('volumes', []) if v['project_name'] == project), None)
+        if vol_info:
+            vol_order = vol_info['order']
+            vol_title = vol_info['title']
+
+    # あらすじの長さ設定
+    length_settings = {
+        'short': {
+            'chars': '200～300文字',
+            'description': '書籍の帯や広告向けの簡潔なあらすじ',
+            'focus': '主人公の状況設定と物語の発端のみ'
+        },
+        'medium': {
+            'chars': '400～600文字',
+            'description': '書籍の裏表紙やオンライン書店向けのあらすじ',
+            'focus': '主人公の状況、物語の発端、序盤の展開（全体の1/3程度まで）'
+        },
+        'long': {
+            'chars': '800～1200文字',
+            'description': '出版社資料や詳細な紹介文向けのあらすじ',
+            'focus': '序盤から中盤にかけての展開（全体の1/2程度まで）、主要な登場人物の紹介'
+        }
+    }
+
+    settings = length_settings.get(synopsis_type, length_settings['medium'])
+
+    prompt = f"""あなたは出版社の編集者です。
+以下の小説のネタバレを避けた魅力的なあらすじを作成してください。
+
+## 作品情報
+- タイトル: 第{vol_order}巻「{vol_title}」{"（シリーズ: " + series + "）" if series else ""}
+
+## plot.md
+{plot_content}
+
+## キャラクター設定
+{character_content if character_content else '（なし）'}
+
+## 世界観設定
+{worldbuilding_content if worldbuilding_content else '（なし）'}
+
+---
+
+## あらすじ作成指示
+
+**長さ**: {settings['chars']}
+**用途**: {settings['description']}
+**含める内容**: {settings['focus']}
+
+**厳守事項**:
+1. **ネタバレ禁止**:
+   - 物語の結末には一切触れない
+   - クライマックスの展開を明かさない
+   - 重大な秘密や真相を暴露しない
+   - キャラクターの生死や運命を明かさない
+   - 予想外の展開（どんでん返し）には触れない
+
+2. **読者の興味を引く要素**:
+   - 主人公の魅力的な設定や状況
+   - 物語の核となる謎や葛藤
+   - 独特な世界観や設定
+   - 「この先どうなるのか？」という期待感
+
+3. **文体**:
+   - 簡潔で読みやすい文章
+   - 作品の雰囲気やトーンを反映
+   - 魅力的で引き込まれる表現
+
+**出力フォーマット**:
+マークダウン形式で以下のように出力してください：
+
+# ネタバレ防止あらすじ
+
+## {synopsis_type.upper()}版（{settings['chars']}）
+
+（あらすじ本文）
+
+---
+
+**対象読者層**: （想定される読者層を簡潔に）
+**ジャンル・雰囲気**: （作品のジャンルや雰囲気を簡潔に）
+"""
+
+    try:
+        message = client.messages.create(
+            model='claude-sonnet-4-6',
+            max_tokens=3000,
+            messages=[{'role': 'user', 'content': prompt}],
+        )
+        synopsis = message.content[0].text
+
+        return jsonify({
+            'success': True,
+            'synopsis': synopsis
+        })
+
+    except Exception as e:
+        return jsonify({'error': f'あらすじ生成中にエラーが発生しました: {str(e)}'}), 500
+
+
 @app.route('/api/claude/generate', methods=['POST'])
 def generate():
     data = request.json

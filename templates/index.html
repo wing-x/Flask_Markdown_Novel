@@ -203,6 +203,7 @@
           <button class="claude-btn" onclick="claudeAction('refine_text')">✏️ 文章推敲</button>
           <button class="claude-btn consistency-check-trigger" onclick="openConsistencyPanel()">🔍 整合性チェック</button>
           <button class="claude-btn" onclick="claudeAction('dialogue_simulation')">💬 対話シミュレーション</button>
+          <button class="claude-btn" onclick="openSpoilerFreeSynopsisModal()">📝 ネタバレ防止あらすじ</button>
         </div>
         <div id="plot-length-selector" style="display:none; margin: 10px 0;">
           <label style="font-weight: bold; display: block; margin-bottom: 5px;">📏 目標執筆量:</label>
@@ -484,6 +485,56 @@
       <div class="modal-buttons">
         <button id="fs-form-save-btn" onclick="saveForeshadowingItem()">保存</button>
         <button onclick="closeModal('foreshadowing-form-modal')">キャンセル</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ネタバレ防止あらすじ生成モーダル -->
+  <div id="synopsis-modal" class="modal" style="display:none;">
+    <div class="modal-content" style="max-width: 900px; max-height: 85vh; overflow-y: auto;">
+      <h3>📝 ネタバレ防止あらすじ生成</h3>
+
+      <div style="margin: 20px 0;">
+        <label style="font-weight: bold; display: block; margin-bottom: 8px;">あらすじの長さ:</label>
+        <select id="synopsis-type-select" style="width: 100%; padding: 10px; border-radius: 4px; border: 1px solid #ccc; font-size: 14px;">
+          <option value="short">SHORT版 (200～300文字) - 書籍の帯や広告向け</option>
+          <option value="medium" selected>MEDIUM版 (400～600文字) - 裏表紙やオンライン書店向け</option>
+          <option value="long">LONG版 (800～1200文字) - 出版社資料や詳細紹介文向け</option>
+        </select>
+      </div>
+
+      <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #5a67d8;">
+        <p style="margin: 0 0 8px 0; font-weight: bold; color: #333;">📌 ネタバレ防止機能について</p>
+        <p style="margin: 0; font-size: 13px; color: #666; line-height: 1.6;">
+          このあらすじ生成では、物語の結末・クライマックス・重大な秘密を含まず、<br>
+          読者の興味を引く魅力的なあらすじを作成します。書籍の販売促進に最適です。
+        </p>
+      </div>
+
+      <div style="margin-bottom: 20px;">
+        <button id="synopsis-generate-btn" onclick="generateSpoilerFreeSynopsis()"
+                style="width: 100%; padding: 12px; background: #5a67d8; color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: bold; cursor: pointer;">
+          🚀 あらすじを生成
+        </button>
+      </div>
+
+      <div id="synopsis-result-area" style="display:none; margin-top: 20px;">
+        <div style="border-top: 2px solid #e0e0e0; padding-top: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h4 style="margin: 0; color: #333;">生成結果</h4>
+            <button id="synopsis-insert-btn" onclick="insertSynopsisToEditor()"
+                    style="padding: 8px 16px; background: #27ae60; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">
+              📋 エディタに挿入
+            </button>
+          </div>
+          <div id="synopsis-result"
+               style="background: #f9f9f9; padding: 20px; border-radius: 8px; border: 1px solid #e0e0e0; max-height: 400px; overflow-y: auto; line-height: 1.8;">
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-buttons">
+        <button onclick="closeModal('synopsis-modal')">閉じる</button>
       </div>
     </div>
   </div>

@@ -1813,3 +1813,93 @@ async function fixPlotInconsistencies() {
     btn.textContent = originalText;
   }
 }
+
+// ---- ネタバレ防止あらすじ生成 ----
+
+let synopsisResultText = ''; // 生成されたあらすじを保存
+
+function openSpoilerFreeSynopsisModal() {
+  if (!currentProject) {
+    showToast('先にプロジェクトを選択してください', '#a06020');
+    return;
+  }
+
+  // 結果エリアをリセット
+  document.getElementById('synopsis-result-area').style.display = 'none';
+  document.getElementById('synopsis-result').innerHTML = '';
+  synopsisResultText = '';
+
+  // モーダルを表示
+  document.getElementById('synopsis-modal').style.display = 'flex';
+}
+
+async function generateSpoilerFreeSynopsis() {
+  if (!currentProject) {
+    showToast('プロジェクトが選択されていません', '#a06020');
+    return;
+  }
+
+  const btn = document.getElementById('synopsis-generate-btn');
+  const resultArea = document.getElementById('synopsis-result-area');
+  const resultDiv = document.getElementById('synopsis-result');
+  const synopsisType = document.getElementById('synopsis-type-select').value;
+
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ 生成中…';
+
+  resultDiv.innerHTML = '<p style="color: #999;">あらすじを生成しています...</p>';
+  resultArea.style.display = 'block';
+
+  try {
+    const res = await fetch('/api/claude/generate_spoiler_free_synopsis', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project: currentProject,
+        series: currentSeries || undefined,
+        synopsis_type: synopsisType
+      })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || 'あらすじ生成に失敗しました', '#c0392b');
+      resultArea.style.display = 'none';
+      return;
+    }
+
+    synopsisResultText = data.synopsis;
+
+    // Markdownレンダリング
+    resultDiv.innerHTML = marked.parse(synopsisResultText);
+    resultArea.style.display = 'block';
+
+    showToast('✅ あらすじを生成しました', '#27ae60');
+
+  } catch (e) {
+    showToast('通信エラー: ' + e.message, '#c0392b');
+    resultArea.style.display = 'none';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+function insertSynopsisToEditor() {
+  if (!synopsisResultText) {
+    showToast('挿入するあらすじがありません', '#a06020');
+    return;
+  }
+
+  if (editor) {
+    const doc = editor.getDoc();
+    const cursor = doc.getCursor();
+    doc.replaceRange('\n\n' + synopsisResultText + '\n\n', cursor);
+    showToast('✅ エディタに挿入しました', '#27ae60');
+    closeModal('synopsis-modal');
+  } else {
+    showToast('エディタが開いていません', '#a06020');
+  }
+}
