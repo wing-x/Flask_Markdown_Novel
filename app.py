@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, render_template
 import anthropic
 import os
 import json
+import shutil
 
 app = Flask(__name__)
 
@@ -134,7 +135,10 @@ def delete_file(project, filename):
         return jsonify({'error': 'ファイルが見つかりません'}), 404
 
     try:
-        os.remove(filepath)
+        if os.path.isdir(filepath):
+            shutil.rmtree(filepath)
+        else:
+            os.remove(filepath)
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

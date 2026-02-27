@@ -111,6 +111,10 @@ function renderFileTree(items, parentElement, depth) {
       dirHeader.className = 'directory-header';
       dirHeader.innerHTML = `<span class="dir-icon">📁</span> ${item.name}`;
       dirHeader.onclick = () => toggleDirectory(dirLi);
+      dirHeader.oncontextmenu = (e) => {
+        e.preventDefault();
+        showContextMenu(e, item.path);
+      };
       dirHeader.dataset.dirPath = item.path;
 
       // ディレクトリをドロップゾーンにする
@@ -693,11 +697,32 @@ function insertResult() {
 
 function showContextMenu(event, filePath) {
   event.stopPropagation();
+  event.preventDefault(); // コンテキストメニュー表示時も念のため
   contextMenuTarget = filePath;
+
   const menu = document.getElementById('file-context-menu');
   menu.style.display = 'block';
-  menu.style.left = event.pageX + 'px';
-  menu.style.top = event.pageY + 'px';
+
+  // ウィンドウサイズとメニューサイズを取得して、見切れを防ぐ
+  const menuWidth = menu.offsetWidth;
+  const menuHeight = menu.offsetHeight;
+  const windowWidth = window.innerWidth;
+  const windowHeight = window.innerHeight;
+
+  let x = event.clientX;
+  let y = event.clientY;
+
+  // 右側の端を越える場合
+  if (x + menuWidth > windowWidth) {
+    x = windowWidth - menuWidth - 5;
+  }
+  // 下側の端を越える場合
+  if (y + menuHeight > windowHeight) {
+    y = windowHeight - menuHeight - 5;
+  }
+
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
 }
 
 async function createDirectory() {
