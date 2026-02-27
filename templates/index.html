@@ -18,13 +18,77 @@
   <div id="app">
     <!-- サイドバー -->
     <aside id="sidebar">
+
+      <!-- ★ シリーズセクション -->
+      <div id="series-section">
+        <h2>📚 シリーズ</h2>
+        <div id="series-controls">
+          <input type="text" id="new-series-name" placeholder="新規シリーズ名">
+          <button id="create-series-btn" onclick="createSeries()">作成</button>
+        </div>
+        <select id="series-select" onchange="onSeriesChange(this.value)" size="1">
+          <option value="">-- シリーズを選択 --</option>
+        </select>
+
+        <!-- 聖典ファイルクイックアクセス（シリーズ選択後に表示） -->
+        <div id="series-bible-section" style="display:none;">
+          <p class="section-label">📖 シリーズ聖典</p>
+          <div id="series-bible-buttons">
+            <button class="series-bible-btn" onclick="openSeriesBibleFile('bible.md')" title="世界設定バイブル">
+              🌐 bible.md
+            </button>
+            <button class="series-bible-btn" onclick="openSeriesBibleFile('characters_master.md')" title="キャラクターマスターシート">
+              👥 characters_master.md
+            </button>
+            <button class="series-bible-btn foreshadowing-launch-btn" onclick="openForeshadowingPanel()" title="伏線管理パネルを開く">
+              🔖 伏線管理
+            </button>
+            <button class="series-bible-btn" onclick="openSeriesBibleFile('series_summary.md')" title="巻別サマリー">
+              📋 series_summary.md
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ★ 巻セクション（シリーズ選択後に表示） -->
+      <div id="volume-section" style="display:none;">
+        <h2>📕 巻</h2>
+        <div id="volume-controls">
+          <input type="text" id="new-volume-title" placeholder="新規巻タイトル">
+          <button id="create-volume-btn" onclick="createVolume()">追加</button>
+        </div>
+        <select id="volume-select" onchange="onVolumeChange(this.value)" size="1">
+          <option value="">-- 巻を選択 --</option>
+        </select>
+        <div id="volume-badge" style="display:none;"></div>
+
+        <!-- ★ 巻サマリー生成 -->
+        <div id="volume-summary-section" style="display:none;">
+          <p class="section-label">巻の完成処理</p>
+          <button id="generate-volume-summary-btn" onclick="generateVolumeSummary()"
+                  title="この巻の全章を読み込み、series_summary.md にサマリーを追記します">
+            📋 巻サマリーを生成
+          </button>
+          <p class="draft-hint">全章執筆完了後に実行してください</p>
+          <div id="volume-summary-progress" style="display:none;">
+            <div id="volume-summary-progress-bar-wrap">
+              <div id="volume-summary-progress-bar"></div>
+            </div>
+            <p id="volume-summary-progress-label"></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 区切り -->
+      <div id="section-divider"></div>
+
       <div id="project-section">
-        <h2>📁 プロジェクト</h2>
+        <h2>📁 単体プロジェクト</h2>
         <div id="project-controls">
           <input type="text" id="new-project-name" placeholder="新規プロジェクト名">
           <button id="create-project-btn" onclick="createProject()">作成</button>
         </div>
-        <select id="project-select" onchange="loadProject(this.value)" size="1">
+        <select id="project-select" onchange="onProjectSelectChange(this.value)" size="1">
           <option value="">-- プロジェクトを選択 --</option>
         </select>
       </div>
@@ -137,7 +201,7 @@
           <button class="claude-btn" onclick="claudeAction('generate_timeline')">📅 タイムライン生成</button>
           <button class="claude-btn" onclick="claudeAction('generate_worldbuilding')">🌍 世界観設定生成</button>
           <button class="claude-btn" onclick="claudeAction('refine_text')">✏️ 文章推敲</button>
-          <button class="claude-btn" onclick="claudeAction('consistency_check')">🔍 整合性チェック</button>
+          <button class="claude-btn consistency-check-trigger" onclick="openConsistencyPanel()">🔍 整合性チェック</button>
           <button class="claude-btn" onclick="claudeAction('dialogue_simulation')">💬 対話シミュレーション</button>
         </div>
         <div id="plot-length-selector" style="display:none; margin: 10px 0;">
@@ -184,6 +248,77 @@
         </div><!-- /claude-panel-body -->
       </div>
     </main>
+
+  <!-- ★ 整合性チェック パネル（フルスクリーンモーダル） -->
+  <div id="consistency-panel" class="fs-modal" style="display:none;">
+    <div class="fs-modal-inner cc-panel-inner">
+
+      <!-- ヘッダー -->
+      <div class="fs-modal-header">
+        <div class="fs-modal-title">
+          <span>🔍</span>
+          <span id="cc-panel-title">整合性チェック</span>
+        </div>
+        <button class="fs-close-btn" onclick="closeConsistencyPanel()">✕</button>
+      </div>
+
+      <!-- 設定バー -->
+      <div class="cc-config-bar">
+        <!-- スコープ選択 -->
+        <div class="cc-config-group">
+          <label>チェック範囲</label>
+          <div class="fs-filter-tabs">
+            <button class="fs-tab active" id="cc-scope-volume" data-scope="volume"
+                    onclick="setCcScope('volume')">この巻のみ</button>
+            <button class="fs-tab" id="cc-scope-series" data-scope="series"
+                    onclick="setCcScope('series')">シリーズ全体</button>
+          </div>
+        </div>
+        <!-- 対象ファイル -->
+        <div class="cc-config-group">
+          <label>対象ファイル（任意）</label>
+          <select id="cc-target-file">
+            <option value="">設定ファイル全体</option>
+          </select>
+        </div>
+        <!-- 実行ボタン -->
+        <button id="cc-run-btn" onclick="runConsistencyCheck()">
+          🔍 チェック実行
+        </button>
+      </div>
+
+      <!-- 進捗バー -->
+      <div id="cc-progress" style="display:none;">
+        <div id="cc-progress-bar-wrap">
+          <div id="cc-progress-bar"></div>
+        </div>
+        <p id="cc-progress-label"></p>
+      </div>
+
+      <!-- 結果エリア -->
+      <div class="cc-results-area" id="cc-results-area">
+
+        <!-- 初期状態 -->
+        <div id="cc-placeholder" class="cc-placeholder">
+          <p>🔍</p>
+          <p>「チェック実行」ボタンで整合性チェックを開始します</p>
+          <p id="cc-placeholder-scope" class="cc-placeholder-sub"></p>
+        </div>
+
+        <!-- 結果サマリーカード -->
+        <div id="cc-summary-card" class="cc-summary-card" style="display:none;">
+          <div id="cc-badge-critical" class="cc-badge cc-badge-critical">🔴 <span id="cc-count-critical">0</span></div>
+          <div id="cc-badge-warning"  class="cc-badge cc-badge-warning">🟡 <span id="cc-count-warning">0</span></div>
+          <div id="cc-badge-suggest"  class="cc-badge cc-badge-suggest">🟢 <span id="cc-count-suggest">0</span></div>
+          <div id="cc-grade" class="cc-grade"></div>
+        </div>
+
+        <!-- 結果本文（Markdown レンダリング） -->
+        <div id="cc-result-body" class="cc-result-body" style="display:none;"></div>
+
+      </div>
+    </div>
+  </div>
   </div>
 
   <div id="toast"></div>
@@ -233,5 +368,115 @@
   </div>
 
   <script src="/static/js/app.js"></script>
+
+  <!-- ★ 伏線管理パネル（フルスクリーンモーダル） -->
+  <div id="foreshadowing-panel" class="fs-modal" style="display:none;">
+    <div class="fs-modal-inner">
+
+      <!-- ヘッダー -->
+      <div class="fs-modal-header">
+        <div class="fs-modal-title">
+          <span>🔖</span>
+          <span id="fs-series-label">伏線管理</span>
+        </div>
+        <div class="fs-modal-header-actions">
+          <button class="fs-add-btn" onclick="openForeshadowingForm()">＋ 新規追加</button>
+          <button class="fs-close-btn" onclick="closeForeshadowingPanel()">✕</button>
+        </div>
+      </div>
+
+      <!-- フィルターバー -->
+      <div class="fs-filter-bar">
+        <div class="fs-filter-group">
+          <label>ステータス</label>
+          <div class="fs-filter-tabs" id="fs-status-tabs">
+            <button class="fs-tab active" data-status="all" onclick="setFsStatusFilter('all')">すべて</button>
+            <button class="fs-tab" data-status="open" onclick="setFsStatusFilter('open')">未回収</button>
+            <button class="fs-tab" data-status="resolved" onclick="setFsStatusFilter('resolved')">回収済み</button>
+            <button class="fs-tab" data-status="abandoned" onclick="setFsStatusFilter('abandoned')">意図的放置</button>
+          </div>
+        </div>
+        <div class="fs-filter-group">
+          <label>登場巻</label>
+          <select id="fs-volume-filter" onchange="renderForeshadowingList()">
+            <option value="">すべての巻</option>
+          </select>
+        </div>
+        <div class="fs-filter-group">
+          <label>キーワード</label>
+          <input type="text" id="fs-keyword-filter" placeholder="伏線内容・キャラ名で検索…" oninput="renderForeshadowingList()">
+        </div>
+        <div class="fs-stats" id="fs-stats"></div>
+      </div>
+
+      <!-- 伏線カードグリッド -->
+      <div class="fs-cards-area">
+        <div id="fs-cards" class="fs-cards-grid"></div>
+        <div id="fs-empty" class="fs-empty" style="display:none;">
+          <p>📭 伏線がまだ登録されていません</p>
+          <p>「＋ 新規追加」ボタンから登録してください</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 伏線 追加/編集フォーム -->
+  <div id="foreshadowing-form-modal" class="modal" style="display:none;">
+    <div class="modal-content fs-form-content">
+      <h3 id="fs-form-title">🔖 伏線を追加</h3>
+
+      <div class="fs-form-grid">
+        <div class="fs-form-group fs-form-full">
+          <label>伏線の内容 <span class="required">*</span></label>
+          <textarea id="fs-f-summary" rows="2" placeholder="例：主人公の父が残した古地図の意味"></textarea>
+        </div>
+        <div class="fs-form-group">
+          <label>登場巻</label>
+          <input type="number" id="fs-f-introduced-volume" min="1" value="1">
+        </div>
+        <div class="fs-form-group">
+          <label>登場章</label>
+          <input type="text" id="fs-f-introduced-chapter" placeholder="例：chapter03">
+        </div>
+        <div class="fs-form-group">
+          <label>ステータス</label>
+          <select id="fs-f-status" onchange="toggleResolveFields()">
+            <option value="open">未回収</option>
+            <option value="resolved">回収済み</option>
+            <option value="abandoned">意図的放置</option>
+          </select>
+        </div>
+        <div class="fs-form-group">
+          <label>回収予定</label>
+          <input type="text" id="fs-f-resolve-target" placeholder="例：7巻以降">
+        </div>
+        <div id="fs-resolve-fields" style="display:none; display:contents;">
+          <div class="fs-form-group" id="fs-resolved-vol-group" style="display:none;">
+            <label>回収した巻</label>
+            <input type="number" id="fs-f-resolved-volume" min="1">
+          </div>
+          <div class="fs-form-group" id="fs-resolved-ch-group" style="display:none;">
+            <label>回収した章</label>
+            <input type="text" id="fs-f-resolved-chapter" placeholder="例：chapter15">
+          </div>
+        </div>
+        <div class="fs-form-group fs-form-full">
+          <label>関連キャラクター</label>
+          <input type="text" id="fs-f-related-characters" placeholder="カンマ区切り（例：主人公, 師匠）">
+        </div>
+        <div class="fs-form-group fs-form-full">
+          <label>メモ</label>
+          <textarea id="fs-f-notes" rows="2" placeholder="補足情報、回収方法のアイデアなど"></textarea>
+        </div>
+      </div>
+
+      <div class="modal-buttons">
+        <button id="fs-form-save-btn" onclick="saveForeshadowingItem()">保存</button>
+        <button onclick="closeModal('foreshadowing-form-modal')">キャンセル</button>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>

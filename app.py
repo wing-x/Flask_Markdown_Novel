@@ -12,6 +12,88 @@ os.makedirs(BASE_DIR, exist_ok=True)
 
 client = anthropic.Anthropic()
 
+# シリーズ関連定数
+SERIES_PREFIX = '_series_'
+
+def get_series_dir(series_name):
+    return os.path.join(BASE_DIR, SERIES_PREFIX + series_name)
+
+def get_series_meta(series_name):
+    meta_path = os.path.join(get_series_dir(series_name), '_meta.json')
+    if os.path.exists(meta_path):
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {'volumes': []}
+
+def save_series_meta(series_name, meta):
+    meta_path = os.path.join(get_series_dir(series_name), '_meta.json')
+    with open(meta_path, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+# シリーズ聖典ファイルのデフォルトテンプレート
+SERIES_BIBLE_TEMPLATES = {
+    'bible.md': (
+        '# 世界設定バイブル\n\n'
+        '## 世界の基本ルール\n\n'
+        '（この世界で絶対に変わらない法則・ルールを記述）\n\n'
+        '## 固有名詞辞典\n\n'
+        '| 名称 | 読み | 説明 |\n'
+        '|------|------|------|\n'
+        '|      |      |      |\n\n'
+        '## 地理・場所\n\n\n'
+        '## 歴史・年表（シリーズ全体）\n\n\n'
+        '## 社会・文化・制度\n\n\n'
+        '## 特殊能力・魔法体系（該当する場合）\n\n'
+    ),
+    'characters_master.md': (
+        '# キャラクターマスターシート\n\n'
+        '> 各キャラの「変わらない核」のみを記録。巻ごとの変化は series_summary.md で管理する。\n\n'
+        '---\n\n'
+        '## 主要キャラクター\n\n'
+        '### キャラ名\n\n'
+        '- **役割**: \n'
+        '- **外見**（不変の特徴）: \n'
+        '- **性格の核**: \n'
+        '- **口癖・話し方**: \n'
+        '- **初登場**: 第○巻\n'
+        '- **セリフサンプル**:\n'
+        '  - 「」\n'
+        '  - 「」\n\n'
+        '---\n\n'
+        '## サブキャラクター\n\n'
+    ),
+    'foreshadowing.md': (
+        '# 伏線マスターリスト\n\n'
+        '| ID | 内容 | 登場巻/章 | 状態 | 回収予定 | 関連キャラ |\n'
+        '|----|------|-----------|------|----------|------------|\n'
+        '| F-001 | （例）主人公の父が残した古地図 | 1巻2章 | 未回収 | 7巻以降 | 主人公、師匠 |\n\n'
+        '---\n\n'
+        '## 状態の定義\n\n'
+        '- **未回収**: まだ解決していない\n'
+        '- **回収済み**: 解決した（巻/章を記載）\n'
+        '- **意図的放置**: 読者への謎として維持\n\n'
+        '---\n\n'
+        '## 巻をまたぐ布石メモ\n\n'
+        '（次巻以降で使う予定の設定や展開の種）\n\n'
+    ),
+    'series_summary.md': (
+        '# シリーズ巻別サマリー\n\n'
+        '> 各巻を書き終えたら「巻サマリー自動生成」で追記する。\n'
+        '> 過去巻はこのサマリーのみをコンテキストに使う（本文は参照しない）。\n\n'
+        '---\n\n'
+        '## 第1巻 タイトル\n\n'
+        '**あらすじ（300字以内）**:\n\n\n'
+        '**この巻で起きた主要な変化**:\n'
+        '- キャラクターの変化:\n'
+        '- 世界情勢の変化:\n'
+        '- 解決した伏線:\n'
+        '- 新たに張った伏線:\n\n'
+        '**各キャラの巻末状態**:\n'
+        '- キャラ名: \n\n'
+        '---\n\n'
+    ),
+}
+
 # --- ファイル管理API ---
 
 @app.route('/')
@@ -22,9 +104,10 @@ def index():
 def list_projects():
     projects = []
     for name in os.listdir(BASE_DIR):
-        if os.path.isdir(os.path.join(BASE_DIR, name)):
+        # _series_ プレフィックスのシリーズフォルダは除外
+        if os.path.isdir(os.path.join(BASE_DIR, name)) and not name.startswith(SERIES_PREFIX):
             projects.append(name)
-    return jsonify(projects)
+    return jsonify(sorted(projects))
 
 @app.route('/api/projects', methods=['POST'])
 def create_project():
@@ -280,10 +363,377 @@ def get_template(filename):
     }
     return templates.get(filename, f'# {filename.replace(".md", "")}\n\n')
 
+# --- シリーズ管理API ---
+
+@app.route('/api/series', methods=['GET'])
+def list_series():
+    """シリーズ一覧を返す"""
+    series_list = []
+    for name in sorted(os.listdir(BASE_DIR)):
+        if os.path.isdir(os.path.join(BASE_DIR, name)) and name.startswith(SERIES_PREFIX):
+            series_name = name[len(SERIES_PREFIX):]
+            series_list.append(series_name)
+    return jsonify(series_list)
+
+@app.route('/api/series', methods=['POST'])
+def create_series():
+    """新規シリーズを作成"""
+    data = request.json
+    name = data.get('name', '').strip()
+    if not name:
+        return jsonify({'error': 'シリーズ名が必要です'}), 400
+
+    series_dir = get_series_dir(name)
+    if os.path.exists(series_dir):
+        return jsonify({'error': '同名のシリーズが既に存在します'}), 400
+
+    os.makedirs(series_dir, exist_ok=True)
+
+    # 聖典ファイルをデフォルトで作成
+    for fname, content in SERIES_BIBLE_TEMPLATES.items():
+        fpath = os.path.join(series_dir, fname)
+        with open(fpath, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+    # メタ情報を初期化
+    save_series_meta(name, {'volumes': []})
+
+    return jsonify({'name': name})
+
+@app.route('/api/series/<series>/volumes', methods=['GET'])
+def list_volumes(series):
+    """シリーズの巻一覧を返す"""
+    series_dir = get_series_dir(series)
+    if not os.path.exists(series_dir):
+        return jsonify({'error': 'シリーズが見つかりません'}), 404
+    meta = get_series_meta(series)
+    return jsonify(meta.get('volumes', []))
+
+@app.route('/api/series/<series>/volumes', methods=['POST'])
+def create_volume(series):
+    """シリーズに新規巻を追加（通常プロジェクトとして作成し、メタ登録する）"""
+    series_dir = get_series_dir(series)
+    if not os.path.exists(series_dir):
+        return jsonify({'error': 'シリーズが見つかりません'}), 404
+
+    data = request.json
+    title = data.get('title', '').strip()
+    if not title:
+        return jsonify({'error': '巻のタイトルが必要です'}), 400
+
+    # 巻番号を自動採番
+    meta = get_series_meta(series)
+    volumes = meta.get('volumes', [])
+    order = len(volumes) + 1
+
+    # プロジェクト名：シリーズ名_vol<N>_タイトル
+    project_name = f'{series}_vol{order:02d}_{title}'
+    project_dir = os.path.join(BASE_DIR, project_name)
+
+    if os.path.exists(project_dir):
+        return jsonify({'error': f'プロジェクト「{project_name}」が既に存在します'}), 400
+
+    os.makedirs(project_dir, exist_ok=True)
+
+    # デフォルトファイルを作成
+    defaults = {
+        'character.md': '# キャラクター設定\n\n> シリーズ共通キャラはシリーズ聖典(characters_master.md)を参照\n> この巻固有の設定・変化のみここに記録する\n\n## この巻での変化・追加設定\n\n',
+        'plot.md': f'# プロット - 第{order}巻「{title}」\n\n## あらすじ\n\n## 第一章\n\n## 結末\n',
+        'worldbuilding.md': '# 世界観設定（この巻固有）\n\n> シリーズ共通設定はシリーズ聖典(bible.md)を参照\n> この巻で新登場の場所・組織・ルールのみここに記録する\n\n',
+        'timeline.md': f'# タイムライン - 第{order}巻\n\n## この巻の出来事\n\n| 時期 | 出来事 | 関連キャラクター |\n|------|--------|------------------|\n|      |        |                  |\n\n## 伏線メモ（この巻）\n\n',
+    }
+    for filename, content in defaults.items():
+        fpath = os.path.join(project_dir, filename)
+        with open(fpath, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+    # メタに登録
+    volumes.append({
+        'order': order,
+        'title': title,
+        'project_name': project_name
+    })
+    meta['volumes'] = volumes
+    save_series_meta(series, meta)
+
+    return jsonify({'order': order, 'title': title, 'project_name': project_name})
+
+@app.route('/api/series/<series>/files/<filename>', methods=['GET'])
+def get_series_file(series, filename):
+    """シリーズ聖典ファイルを取得"""
+    series_dir = get_series_dir(series)
+    if not os.path.exists(series_dir):
+        return jsonify({'error': 'シリーズが見つかりません'}), 404
+
+    fpath = os.path.join(series_dir, filename)
+    if not os.path.exists(fpath):
+        return jsonify({'error': 'ファイルが見つかりません'}), 404
+
+    with open(fpath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    return jsonify({'content': content})
+
+@app.route('/api/series/<series>/files/<filename>', methods=['PUT'])
+def save_series_file(series, filename):
+    """シリーズ聖典ファイルを保存"""
+    series_dir = get_series_dir(series)
+    if not os.path.exists(series_dir):
+        return jsonify({'error': 'シリーズが見つかりません'}), 404
+
+    data = request.json
+    content = data.get('content', '')
+
+    fpath = os.path.join(series_dir, filename)
+    with open(fpath, 'w', encoding='utf-8') as f:
+        f.write(content)
+    return jsonify({'success': True})
+
+@app.route('/api/series/<series>/files/<filename>', methods=['POST'])
+def create_series_file(series, filename):
+    """シリーズ聖典ファイルを新規作成（存在する場合はそのまま返す）"""
+    series_dir = get_series_dir(series)
+    if not os.path.exists(series_dir):
+        return jsonify({'error': 'シリーズが見つかりません'}), 404
+
+    fpath = os.path.join(series_dir, filename)
+    created = False
+    if not os.path.exists(fpath):
+        template = SERIES_BIBLE_TEMPLATES.get(filename, f'# {filename.replace(".md", "")}\n\n')
+        with open(fpath, 'w', encoding='utf-8') as f:
+            f.write(template)
+        created = True
+
+    with open(fpath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    return jsonify({'content': content, 'created': created})
+
+
+# --- 伏線管理API（JSON） ---
+
+def get_foreshadowing_path(series_name):
+    return os.path.join(get_series_dir(series_name), 'foreshadowing.json')
+
+def load_foreshadowing(series_name):
+    fpath = get_foreshadowing_path(series_name)
+    if not os.path.exists(fpath):
+        return {}
+    with open(fpath, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def save_foreshadowing(series_name, data):
+    fpath = get_foreshadowing_path(series_name)
+    with open(fpath, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def next_foreshadowing_id(data):
+    """F-001 形式の次のIDを生成"""
+    if not data:
+        return 'F-001'
+    nums = []
+    for k in data.keys():
+        try:
+            nums.append(int(k.split('-')[1]))
+        except Exception:
+            pass
+    return f'F-{(max(nums) + 1):03d}' if nums else 'F-001'
+
+@app.route('/api/series/<series>/foreshadowing', methods=['GET'])
+def get_foreshadowing(series):
+    """伏線一覧を取得"""
+    series_dir = get_series_dir(series)
+    if not os.path.exists(series_dir):
+        return jsonify({'error': 'シリーズが見つかりません'}), 404
+    data = load_foreshadowing(series)
+    items = list(data.values())
+    # status / introduced_volume でソート
+    items.sort(key=lambda x: (
+        {'open': 0, 'abandoned': 1, 'resolved': 2}.get(x.get('status', 'open'), 0),
+        x.get('introduced_volume', 0)
+    ))
+    return jsonify(items)
+
+@app.route('/api/series/<series>/foreshadowing', methods=['POST'])
+def create_foreshadowing(series):
+    """伏線を新規追加"""
+    series_dir = get_series_dir(series)
+    if not os.path.exists(series_dir):
+        return jsonify({'error': 'シリーズが見つかりません'}), 404
+
+    req = request.json
+    summary = req.get('summary', '').strip()
+    if not summary:
+        return jsonify({'error': '伏線の内容（summary）は必須です'}), 400
+
+    data = load_foreshadowing(series)
+    new_id = next_foreshadowing_id(data)
+
+    item = {
+        'id': new_id,
+        'summary': summary,
+        'introduced_volume': req.get('introduced_volume', 1),
+        'introduced_chapter': req.get('introduced_chapter', ''),
+        'status': req.get('status', 'open'),
+        'resolve_target': req.get('resolve_target', ''),
+        'resolved_volume': req.get('resolved_volume', ''),
+        'resolved_chapter': req.get('resolved_chapter', ''),
+        'related_characters': req.get('related_characters', []),
+        'notes': req.get('notes', ''),
+    }
+    data[new_id] = item
+    save_foreshadowing(series, data)
+    return jsonify(item), 201
+
+@app.route('/api/series/<series>/foreshadowing/<item_id>', methods=['PUT'])
+def update_foreshadowing(series, item_id):
+    """伏線を更新"""
+    series_dir = get_series_dir(series)
+    if not os.path.exists(series_dir):
+        return jsonify({'error': 'シリーズが見つかりません'}), 404
+
+    data = load_foreshadowing(series)
+    if item_id not in data:
+        return jsonify({'error': f'{item_id} が見つかりません'}), 404
+
+    req = request.json
+    item = data[item_id]
+    for field in ['summary', 'introduced_volume', 'introduced_chapter',
+                  'status', 'resolve_target', 'resolved_volume',
+                  'resolved_chapter', 'related_characters', 'notes']:
+        if field in req:
+            item[field] = req[field]
+
+    data[item_id] = item
+    save_foreshadowing(series, data)
+    return jsonify(item)
+
+@app.route('/api/series/<series>/foreshadowing/<item_id>', methods=['DELETE'])
+def delete_foreshadowing(series, item_id):
+    """伏線を削除"""
+    series_dir = get_series_dir(series)
+    if not os.path.exists(series_dir):
+        return jsonify({'error': 'シリーズが見つかりません'}), 404
+
+    data = load_foreshadowing(series)
+    if item_id not in data:
+        return jsonify({'error': f'{item_id} が見つかりません'}), 404
+
+    del data[item_id]
+    save_foreshadowing(series, data)
+    return jsonify({'success': True, 'deleted_id': item_id})
+
 # --- プロジェクトコンテキスト取得 ---
 
+def detect_series_from_project(project_name):
+    """プロジェクト名からシリーズ名を自動検出する。
+    命名規則: {series}_vol{N}_{title} → series名を返す。
+    シリーズに属さない場合は None を返す。
+    """
+    import re
+    # _vol01_ / _vol1_ 形式を検出
+    m = re.match(r'^(.+?)_vol\d+_', project_name)
+    if m:
+        candidate = m.group(1)
+        series_dir = get_series_dir(candidate)
+        if os.path.isdir(series_dir):
+            return candidate
+    return None
+
+
+def _read_and_trim(fpath, char_limit):
+    """ファイルを読み込み、char_limit を超える場合は後半を省略する"""
+    if not os.path.exists(fpath):
+        return None
+    with open(fpath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    if len(content) > char_limit:
+        content = content[:char_limit] + f'\n\n... （{len(content) - char_limit}字省略）'
+    return content
+
+
+def get_series_context(series_name, char_limit_total=20000):
+    """シリーズ聖典を読み込む。
+    - bible.md / characters_master.md / foreshadowing.md / series_summary.md
+    - 各ファイルを均等に char_limit_total へ収める
+    """
+    series_dir = get_series_dir(series_name)
+    files = ['bible.md', 'characters_master.md', 'foreshadowing.md', 'series_summary.md']
+    per_file_limit = char_limit_total // len(files)
+
+    context = {}
+    for fname in files:
+        fpath = os.path.join(series_dir, fname)
+        content = _read_and_trim(fpath, per_file_limit)
+        if content:
+            context[f'[シリーズ聖典] {fname}'] = content
+    return context
+
+
+def get_volume_context(project, include_plot=True, char_limit_total=10000):
+    """巻固有のコンテキストを読み込む。
+    - character.md / worldbuilding.md / timeline.md（+ オプションで plot.md）
+    - plot.md は他より長いため別枠で扱う
+    """
+    project_dir = os.path.join(BASE_DIR, project)
+    support_files = ['character.md', 'worldbuilding.md', 'timeline.md']
+    per_file_limit = char_limit_total // len(support_files)
+
+    context = {}
+    for fname in support_files:
+        fpath = os.path.join(project_dir, fname)
+        content = _read_and_trim(fpath, per_file_limit)
+        if content:
+            context[f'[この巻の設定] {fname}'] = content
+
+    if include_plot:
+        fpath = os.path.join(project_dir, 'plot.md')
+        # plot.md はあらすじ部分のみに絞る（最大4000字）
+        content = _read_and_trim(fpath, 4000)
+        if content:
+            context['[この巻のプロット] plot.md'] = content
+
+    return context
+
+
+def build_context_text(project, series=None, include_plot=True):
+    """Claude に渡すコンテキストテキストを組み立てる。
+    - シリーズ所属のプロジェクトなら、シリーズ聖典（~2万字）＋巻固有設定（~1万字）
+    - 単体プロジェクトなら従来どおり全ファイル（上限付き）
+    Returns:
+        ctx_text (str), context_summary (str)
+    """
+    # シリーズを自動検出（明示的に渡されない場合）
+    if series is None:
+        series = detect_series_from_project(project)
+
+    context = {}
+
+    if series:
+        # ① シリーズ聖典（共通・最大2万字）
+        context.update(get_series_context(series, char_limit_total=20000))
+        # ② 巻固有設定（最大1万字）
+        context.update(get_volume_context(project, include_plot=include_plot, char_limit_total=10000))
+        summary = f'シリーズ「{series}」／巻プロジェクト「{project}」の階層コンテキストを使用'
+    else:
+        # 単体プロジェクト：従来どおりだが文字数上限を設ける
+        project_dir = os.path.join(BASE_DIR, project)
+        for fname in ['character.md', 'worldbuilding.md', 'timeline.md']:
+            fpath = os.path.join(project_dir, fname)
+            content = _read_and_trim(fpath, 3000)
+            if content:
+                context[fname] = content
+        if include_plot:
+            fpath = os.path.join(project_dir, 'plot.md')
+            content = _read_and_trim(fpath, 4000)
+            if content:
+                context['plot.md'] = content
+        summary = f'単体プロジェクト「{project}」のコンテキストを使用'
+
+    ctx_text = '\n\n'.join(f'## {k}\n{v}' for k, v in context.items())
+    return ctx_text, summary
+
+
 def get_project_context(project):
-    """プロジェクト内の主要ファイルを読み込んでコンテキストを作成"""
+    """後方互換用ラッパー（既存呼び出し箇所が残る場合に備える）"""
     project_dir = os.path.join(BASE_DIR, project)
     context = {}
     for fname in ['character.md', 'plot.md', 'worldbuilding.md', 'timeline.md']:
@@ -764,6 +1214,7 @@ def generate_character_from_draft():
     """plot_draft.md の情報を元に特定のキャラクターの詳細設定を生成する"""
     data = request.json
     project = data.get('project', '')
+    series = data.get('series', '') or None   # ★
     character_name = data.get('character_name', '')
 
     if not project:
@@ -782,7 +1233,16 @@ def generate_character_from_draft():
     with open(draft_path, 'r', encoding='utf-8') as f:
         draft_content = f.read().strip()
 
+    # ★ シリーズ聖典があれば追加コンテキストとして使う
+    series_ctx_text = ''
+    if series or detect_series_from_project(project):
+        s = series or detect_series_from_project(project)
+        series_ctx, _ = build_context_text(project, series=s, include_plot=False)
+        if series_ctx:
+            series_ctx_text = f'\n\n## シリーズ共通設定（既存キャラクターとの整合性を保つこと）\n{series_ctx}'
+
     prompt = f"""以下のプロット展開案から「{character_name}」というキャラクターの情報を抽出し、詳細なキャラクタープロファイルを作成してください。
+{series_ctx_text}
 
 ## プロット展開案
 {draft_content}
@@ -979,6 +1439,7 @@ def generate_chapters():
     """plot.md の各章を解析し、chapter01.md, chapter02.md ... として本文を生成・保存する"""
     data = request.json
     project = data.get('project', '')
+    series = data.get('series', '') or None   # ★ フロントから渡されたシリーズ名
     if not project:
         return jsonify({'error': 'プロジェクトが指定されていません'}), 400
 
@@ -992,17 +1453,33 @@ def generate_chapters():
     with open(plot_path, 'r', encoding='utf-8') as f:
         plot_content = f.read().strip()
 
-    # character.md / worldbuilding.md もコンテキストとして読み込む（文字数制限付き）
-    extra_ctx = {}
-    for fname in ['character.md', 'worldbuilding.md']:
-        fpath = os.path.join(project_dir, fname)
-        if os.path.exists(fpath):
-            with open(fpath, 'r', encoding='utf-8') as f:
-                content = f.read()
-                # コスト削減：各ファイルを2000文字以内に制限
-                if len(content) > 2000:
-                    content = content[:2000] + '\n\n（以下省略）'
-                extra_ctx[fname] = content
+    # ★ 階層コンテキストを構築（plot.md は章ごとのプロンプトで個別に渡すため除外）
+    ctx_text, ctx_summary = build_context_text(project, series=series, include_plot=False)
+
+    # 後続ロジックで char_ctx / world_ctx として使えるよう整形
+    char_ctx = ''
+    world_ctx = ''
+    # 従来の extra_ctx 互換：ctx_text から character/worldbuilding を取り出す（なければ全体を使う）
+    import re as _re
+    m_char = _re.search(r'## \[この巻の設定\] character\.md\n([\s\S]+?)(?=\n## |\Z)', ctx_text)
+    m_world = _re.search(r'## \[この巻の設定\] worldbuilding\.md\n([\s\S]+?)(?=\n## |\Z)', ctx_text)
+    m_char_single = _re.search(r'## character\.md\n([\s\S]+?)(?=\n## |\Z)', ctx_text)
+    m_world_single = _re.search(r'## worldbuilding\.md\n([\s\S]+?)(?=\n## |\Z)', ctx_text)
+
+    if m_char:
+        char_ctx = m_char.group(1).strip()
+    elif m_char_single:
+        char_ctx = m_char_single.group(1).strip()
+
+    if m_world:
+        world_ctx = m_world.group(1).strip()
+    elif m_world_single:
+        world_ctx = m_world_single.group(1).strip()
+
+    # シリーズ聖典の内容はキャラ・世界観コンテキストに追記する
+    if ctx_text:
+        char_ctx = ctx_text + ('\n\n---\n\n' + char_ctx if char_ctx else '')
+        world_ctx = world_ctx  # world_ctx は ctx_text に含まれているので上書き不要
 
     # --- plot.md から章セクションを動的に抽出 ---
     import re
@@ -1127,9 +1604,7 @@ def generate_chapters():
     if len(synopsis) > 1000:
         synopsis = synopsis[:1000] + '...'
 
-    # キャラクター情報
-    char_ctx = extra_ctx.get('character.md', '')
-    world_ctx = extra_ctx.get('worldbuilding.md', '')
+    # ★ char_ctx / world_ctx は build_context_text で既に設定済み
 
     created_files = []
 
@@ -1144,19 +1619,20 @@ def generate_chapters():
             section_label = '章'
             writing_note = '物語の流れを自然につなぎ、読者を次章へ引き込む終わり方を意識してください'
 
-        # プロンプトを改善：プロットへの忠実度を強化
+        # シリーズ情報バナー（シリーズ所属の場合のみ）
+        series_banner = f'【シリーズ】{series}\n' if series else ''
+
+        # プロンプト：階層コンテキスト対応
         prompt = f"""あなたはプロの小説家です。以下のプロットから{section_label}の本文を執筆してください。
 
 【重要】プロットに書かれた内容を必ず全て含めてください。プロットの展開、シーン、登場人物の行動、会話の要点などを省略せず、すべて本文に反映させることが最優先です。
 
-【あらすじ】
-{synopsis if synopsis else '（未設定）'}
-
-【キャラクター設定】
+{series_banner}
+【設定・コンテキスト（シリーズ聖典・巻固有設定）】
 {char_ctx if char_ctx else '（未設定）'}
 
-【世界観】
-{world_ctx if world_ctx else '（未設定）'}
+【あらすじ（この巻）】
+{synopsis if synopsis else '（未設定）'}
 
 【この{section_label}のタイトル】
 {title}
@@ -1207,20 +1683,235 @@ def generate_chapters():
     return jsonify({'created': created_files, 'count': len(created_files)})
 
 
+# --- 整合性チェック専用API ---
+
+@app.route('/api/claude/consistency_check', methods=['POST'])
+def run_consistency_check():
+    """シリーズ・巻の整合性チェックを実行する。
+    scope: 'volume' = この巻のみ / 'series' = シリーズ全体（過去巻との照合）
+    ストリーミングレスポンスで結果を返す。
+    """
+    import re
+    from flask import stream_with_context, Response
+
+    data    = request.json
+    project = data.get('project', '')
+    series  = data.get('series', '') or None
+    scope   = data.get('scope', 'volume')   # 'volume' or 'series'
+    target_file = data.get('target_file', '')  # 特定ファイルを対象にする場合
+
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    if not series:
+        series = detect_series_from_project(project)
+
+    project_dir = os.path.join(BASE_DIR, project)
+
+    # --- 巻メタ情報 ---
+    vol_order = '?'
+    vol_title = project
+    if series:
+        meta = get_series_meta(series)
+        vol_info = next((v for v in meta.get('volumes', []) if v['project_name'] == project), None)
+        if vol_info:
+            vol_order = vol_info['order']
+            vol_title  = vol_info['title']
+
+    # --- コンテキスト収集 ---
+
+    # ① シリーズ聖典（スコープ問わず使用）
+    series_ctx_parts = []
+    if series:
+        series_dir = get_series_dir(series)
+
+        bible_path = os.path.join(series_dir, 'bible.md')
+        if os.path.exists(bible_path):
+            content = _read_and_trim(bible_path, 5000)
+            series_ctx_parts.append(f'### [世界設定バイブル]\n{content}')
+
+        chars_path = os.path.join(series_dir, 'characters_master.md')
+        if os.path.exists(chars_path):
+            content = _read_and_trim(chars_path, 5000)
+            series_ctx_parts.append(f'### [キャラクターマスター]\n{content}')
+
+    # ② 過去巻サマリー（series スコープのみ）
+    past_summaries = ''
+    if scope == 'series' and series:
+        summary_path = os.path.join(get_series_dir(series), 'series_summary.md')
+        past_summaries = _read_and_trim(summary_path, 6000) or '（まだサマリーが記録されていません）'
+
+    # ③ 伏線マスターリスト
+    foreshadowing_ctx = ''
+    if series:
+        fs_data = load_foreshadowing(series)
+        if fs_data:
+            lines = []
+            for item in fs_data.values():
+                status_label = {'open': '未回収', 'resolved': '回収済み', 'abandoned': '意図的放置'}.get(item['status'], item['status'])
+                lines.append(
+                    f"- [{item['id']}] {item['summary']} "
+                    f"（登場:第{item.get('introduced_volume','?')}巻 {item.get('introduced_chapter','')} ／ "
+                    f"状態:{status_label} ／ 回収予定:{item.get('resolve_target','未設定')}）"
+                )
+            foreshadowing_ctx = '\n'.join(lines)
+        else:
+            foreshadowing_ctx = '（伏線はまだ登録されていません）'
+
+    # ④ この巻の設定ファイル
+    volume_ctx_parts = []
+    for fname in ['character.md', 'worldbuilding.md', 'timeline.md', 'plot.md']:
+        fpath = os.path.join(project_dir, fname)
+        content = _read_and_trim(fpath, 3000)
+        if content:
+            volume_ctx_parts.append(f'### [この巻: {fname}]\n{content}')
+
+    # ⑤ 対象ファイル（指定がある場合）or chapter サンプル
+    target_ctx = ''
+    if target_file:
+        fpath = os.path.join(project_dir, target_file)
+        content = _read_and_trim(fpath, 4000)
+        if content:
+            target_ctx = f'### [チェック対象ファイル: {target_file}]\n{content}'
+    else:
+        # chapter*.md の最初と最後の1章ずつをサンプルとして含める
+        import re as _re
+        chapter_pat = _re.compile(r'chapter\d+\.md$', _re.IGNORECASE)
+        ch_files = sorted([f for f in os.listdir(project_dir) if chapter_pat.match(f)])
+        samples = []
+        if ch_files:
+            samples.append(ch_files[0])
+            if len(ch_files) > 1:
+                samples.append(ch_files[-1])
+        for cf in samples:
+            content = _read_and_trim(os.path.join(project_dir, cf), 2000)
+            if content:
+                target_ctx += f'\n\n### [章サンプル: {cf}]\n{content}'
+
+    # --- プロンプト構築 ---
+    scope_label = 'シリーズ全体（過去巻との照合を含む）' if scope == 'series' else 'この巻のみ'
+
+    series_section = ''
+    if series_ctx_parts:
+        series_section = '## シリーズ聖典\n\n' + '\n\n'.join(series_ctx_parts)
+
+    past_section = ''
+    if scope == 'series' and past_summaries:
+        past_section = f'## 過去巻のサマリー\n\n{past_summaries}'
+
+    volume_section = '## この巻の設定ファイル\n\n' + '\n\n'.join(volume_ctx_parts) if volume_ctx_parts else ''
+    target_section = f'## チェック対象\n\n{target_ctx}' if target_ctx else ''
+
+    prompt = f"""あなたは長編小説シリーズの専任編集者です。
+以下の資料を読み込み、**{scope_label}** の視点で整合性をチェックしてください。
+
+チェックスコープ: {scope_label}
+対象: 第{vol_order}巻「{vol_title}」{"（シリーズ: " + series + "）" if series else ""}
+
+{series_section}
+
+{past_section}
+
+## 伏線マスターリスト
+{foreshadowing_ctx}
+
+{volume_section}
+
+{target_section}
+
+---
+
+## チェック指示
+
+以下の観点で問題・懸念事項を洗い出し、**必ず下記のフォーマット**で出力してください。
+
+### チェック観点
+1. **設定の矛盾**: 世界観・ルール・固有名詞の表記ゆれ・前後矛盾
+2. **キャラクターの逸脱**: 性格・口調・能力がマスターシートや過去巻と食い違っていないか
+3. **伏線の問題**: 回収されないまま放置されている伏線、矛盾する伏線の扱い
+4. **過去巻との齟齬**: {"過去巻サマリーと今巻の設定・イベントが矛盾していないか" if scope == "series" else "（この巻スコープではスキップ）"}
+5. **推奨改善**: 重大ではないが品質向上につながる提案
+
+### 出力フォーマット（厳守）
+
+## 整合性チェック結果
+**チェックスコープ**: {scope_label}
+**対象**: 第{vol_order}巻「{vol_title}」
+
+---
+
+### 🔴 重大な矛盾・エラー
+（設定と明確に矛盾する問題。必ず修正が必要）
+
+- **[カテゴリ]** 問題の説明。該当箇所: ○○。推奨対処: ○○。
+
+（問題がなければ「問題なし ✅」と記載）
+
+---
+
+### 🟡 注意・要確認
+（矛盾の可能性があるが確認が必要な事項、または表記ゆれ）
+
+- **[カテゴリ]** 問題の説明。
+
+（問題がなければ「問題なし ✅」と記載）
+
+---
+
+### 🟢 改善提案
+（必須ではないが、品質・整合性向上のための提案）
+
+- **[カテゴリ]** 提案内容。
+
+（提案がなければ「特になし ✅」と記載）
+
+---
+
+### 📊 サマリー
+- 重大な問題: ○件
+- 要確認事項: ○件
+- 改善提案: ○件
+- 総合評価: （A: 問題なし / B: 軽微な問題あり / C: 要修正 / D: 重大な問題あり）
+
+コメント: （全体の印象・特記事項を2〜3文で）
+"""
+
+    # --- ストリーミングで返す ---
+    def generate_stream():
+        try:
+            with client.messages.stream(
+                model='claude-sonnet-4-6',
+                max_tokens=4000,
+                messages=[{'role': 'user', 'content': prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield f"data: {json.dumps({'chunk': text})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate_stream()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
+
+
 @app.route('/api/claude/generate', methods=['POST'])
 def generate():
     data = request.json
     action = data.get('action')
     project = data.get('project', '')
+    series = data.get('series', '') or None   # ★ フロントから明示的に渡されたシリーズ名
     current_content = data.get('current_content', '')
     extra_context = data.get('context', '')
-    
-    project_context = get_project_context(project) if project else {}
-    
-    ctx_text = '\n\n'.join(
-        f'## {k}\n{v}' for k, v in project_context.items()
-    )
-    
+
+    # ★ 階層コンテキストを構築
+    if project:
+        ctx_text, _ = build_context_text(project, series=series, include_plot=True)
+    else:
+        ctx_text = ''
+
     # キャラクター役割を取得
     character_role = data.get('character_role', 'メインキャラクター')
 
@@ -1451,6 +2142,225 @@ def generate():
     )
 
     return jsonify({'result': message.content[0].text})
+
+
+@app.route('/api/claude/context_debug', methods=['POST'])
+def context_debug():
+    """現在のコンテキスト構成をデバッグ表示するエンドポイント（開発用）"""
+    data = request.json
+    project = data.get('project', '')
+    series = data.get('series', '') or None
+
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    ctx_text, summary = build_context_text(project, series=series, include_plot=True)
+
+    detected_series = detect_series_from_project(project)
+    used_series = series or detected_series
+
+    return jsonify({
+        'summary': summary,
+        'detected_series': detected_series,
+        'used_series': used_series,
+        'context_length': len(ctx_text),
+        'context_preview': ctx_text[:500] + ('...' if len(ctx_text) > 500 else ''),
+        'sections': [line.lstrip('# ') for line in ctx_text.split('\n') if line.startswith('## ')]
+    })
+
+
+# --- 巻サマリー自動生成API ---
+
+@app.route('/api/claude/generate_volume_summary', methods=['POST'])
+def generate_volume_summary():
+    """巻内の全 chapter*.md を読み込み、次巻執筆用の圧縮サマリーを生成して
+    series_summary.md に追記する。
+    ストリーミングレスポンスで進捗を返す。
+    """
+    import re
+    from flask import stream_with_context, Response
+
+    data = request.json
+    project = data.get('project', '')
+    series  = data.get('series', '') or None
+
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    # シリーズを自動検出
+    if not series:
+        series = detect_series_from_project(project)
+    if not series:
+        return jsonify({'error': 'このプロジェクトはシリーズに属していません'}), 400
+
+    project_dir = os.path.join(BASE_DIR, project)
+    series_dir  = get_series_dir(series)
+
+    # --- 巻番号・タイトルをメタから取得 ---
+    meta = get_series_meta(series)
+    vol_info = next((v for v in meta.get('volumes', []) if v['project_name'] == project), None)
+    vol_order = vol_info['order'] if vol_info else '?'
+    vol_title = vol_info['title'] if vol_info else project
+
+    # --- chapter*.md を収集（part ディレクトリ含む） ---
+    chapter_files = []
+    chapter_pat = re.compile(r'chapter\d+\.md$', re.IGNORECASE)
+
+    # ルート直下
+    for fname in sorted(os.listdir(project_dir)):
+        if chapter_pat.match(fname):
+            chapter_files.append(os.path.join(project_dir, fname))
+        elif fname == 'epilogue.md' or fname == 'chapter_end.md':
+            chapter_files.append(os.path.join(project_dir, fname))
+
+    # part*/chapter*.md
+    for dname in sorted(os.listdir(project_dir)):
+        dpath = os.path.join(project_dir, dname)
+        if os.path.isdir(dpath) and dname.startswith('part'):
+            for fname in sorted(os.listdir(dpath)):
+                if chapter_pat.match(fname):
+                    chapter_files.append(os.path.join(dpath, fname))
+
+    if not chapter_files:
+        return jsonify({'error': 'chapter*.md が見つかりません。先に章を生成してください'}), 400
+
+    # --- 章本文を結合（長すぎる場合は冒頭+末尾のみ） ---
+    CHAPTER_CHAR_LIMIT = 2000   # 1章あたりの文字数上限
+    chapters_text_parts = []
+    for fpath in chapter_files:
+        with open(fpath, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+        label = os.path.relpath(fpath, project_dir)
+        if len(content) > CHAPTER_CHAR_LIMIT:
+            half = CHAPTER_CHAR_LIMIT // 2
+            content = content[:half] + f'\n\n... （中略） ...\n\n' + content[-half:]
+        chapters_text_parts.append(f'### {label}\n{content}')
+
+    chapters_combined = '\n\n---\n\n'.join(chapters_text_parts)
+    total_chapters = len(chapter_files)
+
+    # --- 既存の series_summary.md を読み込む ---
+    summary_path = os.path.join(series_dir, 'series_summary.md')
+    existing_summary = ''
+    if os.path.exists(summary_path):
+        with open(summary_path, 'r', encoding='utf-8') as f:
+            existing_summary = f.read()
+
+    # --- 伏線情報（この巻に関連するもの） ---
+    foreshadowing_data = load_foreshadowing(series)
+    vol_foreshadowing = [
+        f"- [{v['id']}] {v['summary']} （状態: {v['status']}）"
+        for v in foreshadowing_data.values()
+        if str(v.get('introduced_volume', '')) == str(vol_order)
+        or str(v.get('resolved_volume', '')) == str(vol_order)
+    ]
+    foreshadowing_note = '\n'.join(vol_foreshadowing) if vol_foreshadowing else '（この巻では伏線の登録なし）'
+
+    # --- シリーズ聖典のキャラ情報（圧縮） ---
+    chars_master_path = os.path.join(series_dir, 'characters_master.md')
+    chars_master = ''
+    if os.path.exists(chars_master_path):
+        with open(chars_master_path, 'r', encoding='utf-8') as f:
+            chars_master = f.read()[:3000]
+
+    # --- プロンプト構築 ---
+    prompt = f"""あなたは長編小説シリーズのシリーズ構成担当編集者です。
+以下の「第{vol_order}巻「{vol_title}」」の全章テキストを読み込み、
+次巻以降の執筆時にコンテキストとして使う「巻別サマリー」を生成してください。
+
+## 制約
+- 全体で **1000〜1500字以内** に収めること（次巻執筆時のトークン節約が目的）
+- 本文の文章を引用せず、**変化・状態・結果** だけを記録すること
+- 伏線の回収/追加は明示的に記録すること
+- 各キャラクターの「巻末時点の状態」を必ず記録すること
+
+## 既存サマリー（参考・重複しないこと）
+{existing_summary[-1000:] if existing_summary else '（まだ他の巻のサマリーはありません）'}
+
+## キャラクターマスター（参照用）
+{chars_master if chars_master else '（未設定）'}
+
+## この巻の伏線情報
+{foreshadowing_note}
+
+## 全章テキスト（第{vol_order}巻 全{total_chapters}章）
+{chapters_combined}
+
+## 出力フォーマット（必ずこの形式を守ること）
+
+---
+
+## 第{vol_order}巻「{vol_title}」
+
+**あらすじ（300字以内）**:
+（この巻で何が起きたかを簡潔に）
+
+**この巻で起きた主要な変化**:
+- キャラクターの変化: （誰がどう変わったか）
+- 世界情勢の変化: （世界・組織・状況の変化）
+- 解決した伏線: （回収された謎・伏線）
+- 新たに張った伏線: （新しく登場した謎・布石）
+
+**各キャラの巻末状態**:
+- （キャラ名）: （心理状態・立場・関係性の現在）
+（主要キャラ全員分を記載）
+
+**次巻への引き）**:
+（次巻の執筆者が把握すべき未解決事項・予告）
+
+---
+"""
+
+    # --- Claude API 呼び出し（ストリーミング） ---
+    def generate_stream():
+        generated_text = ''
+        try:
+            with client.messages.stream(
+                model='claude-sonnet-4-6',
+                max_tokens=3000,
+                messages=[{'role': 'user', 'content': prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    generated_text += text
+                    # SSE 形式で進捗を送出
+                    yield f"data: {json.dumps({'chunk': text})}\n\n"
+
+            # --- series_summary.md に追記 ---
+            # 既存に同じ巻のセクションがあれば置換、なければ末尾に追記
+            section_header = f'## 第{vol_order}巻'
+            new_section = generated_text.strip()
+
+            if section_header in existing_summary:
+                # 既存セクションを置換
+                pattern = re.compile(
+                    rf'(---\s*\n\s*{re.escape(section_header)}[^\n]*\n[\s\S]+?)(?=\n---\s*\n## 第|\Z)',
+                    re.MULTILINE
+                )
+                if pattern.search(existing_summary):
+                    updated = pattern.sub(new_section + '\n', existing_summary)
+                else:
+                    updated = existing_summary + '\n\n' + new_section
+            else:
+                # 末尾に追記
+                updated = existing_summary.rstrip() + '\n\n' + new_section + '\n'
+
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write(updated)
+
+            yield f"data: {json.dumps({'done': True, 'saved': True, 'vol_order': vol_order, 'vol_title': vol_title})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate_stream()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        }
+    )
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
