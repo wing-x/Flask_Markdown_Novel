@@ -316,10 +316,11 @@ def generate_plot_template(draft_content):
             return str(n)  # 100以上は数字で返す
 
     # plot_draftから構造を解析
-    # 部構造（## ■ 第一部... など）
-    part_pattern = re.compile(r'^##\s+■\s+第([一二三四五六七八九十\d]+)部', re.MULTILINE)
-    # 章構造（### 第1章... など）
-    chapter_pattern = re.compile(r'^###\s+第(\d+|[一二三四五六七八九十]+)章', re.MULTILINE)
+    # 部構造（## 第一部「...」 または ## ■ 第一部... など）- タイトルも取得
+    # タイトルはオプショナル（「」や『』で囲まれている場合と囲まれていない場合の両方に対応）
+    part_pattern = re.compile(r'^##\s+(?:■\s+)?第([一二三四五六七八九十\d]+)部[「『]([^」』]+)[」』]', re.MULTILINE)
+    # 章構造（### 第1章「...」 など）- タイトルも取得
+    chapter_pattern = re.compile(r'^###\s+第(\d+|[一二三四五六七八九十]+)章(?:[「『]([^」』\n]+)[」』])?', re.MULTILINE)
     # エピローグ
     epilogue_pattern = re.compile(r'^###\s+エピローグ', re.MULTILINE)
 
@@ -339,6 +340,7 @@ def generate_plot_template(draft_content):
 
         for i, part_match in enumerate(parts):
             part_num_str = part_match.group(1)
+            part_title = part_match.group(2) if part_match.group(2) else ""
             part_num = int(part_num_str) if part_num_str.isdigit() else KANJI_TO_NUM.get(part_num_str, i + 1)
 
             # この部の範囲を取得
@@ -346,12 +348,19 @@ def generate_plot_template(draft_content):
             part_end = parts[i + 1].start() if i + 1 < len(parts) else len(draft_content)
             part_content = draft_content[part_start:part_end]
 
-            # この部内の章を検出
-            part_chapters = chapter_pattern.findall(part_content)
+            # この部内の章を検出（マッチオブジェクトも取得）
+            part_chapter_matches = list(chapter_pattern.finditer(part_content))
 
-            template += f"\n## 第{num_to_kanji(part_num)}部\n\n"
+            # 部の見出しを追加（タイトルがあれば含める）
+            if part_title.strip():
+                template += f"\n## 第{num_to_kanji(part_num)}部「{part_title.strip()}」\n\n"
+            else:
+                template += f"\n## 第{num_to_kanji(part_num)}部\n\n"
 
-            for ch_num_str in part_chapters:
+            for ch_match in part_chapter_matches:
+                ch_num_str = ch_match.group(1)
+                ch_title = ch_match.group(2) if ch_match.group(2) else ""
+
                 if ch_num_str.isdigit():
                     ch_num = int(ch_num_str)
                 else:
@@ -364,7 +373,11 @@ def generate_plot_template(draft_content):
                     else:
                         ch_num = KANJI_TO_NUM.get(ch_num_str, 0)
 
-                template += f"\n### 第{num_to_kanji(ch_num)}章\n\n"
+                # 章の見出しを追加（タイトルがあれば含める）
+                if ch_title.strip():
+                    template += f"\n### 第{num_to_kanji(ch_num)}章「{ch_title.strip()}」\n\n"
+                else:
+                    template += f"\n### 第{num_to_kanji(ch_num)}章\n\n"
 
     else:
         # 部構造がない場合は通常の章のみ
@@ -373,25 +386,36 @@ def generate_plot_template(draft_content):
             '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
         }
 
-        chapter_count = 0
-        for ch_num_str in chapter_pattern.findall(draft_content):
-            if ch_num_str.isdigit():
-                chapter_count = max(chapter_count, int(ch_num_str))
-            else:
-                if '十' in ch_num_str:
-                    parts_split = ch_num_str.split('十')
-                    tens = KANJI_TO_NUM.get(parts_split[0], 1) if parts_split[0] else 1
-                    ones = KANJI_TO_NUM.get(parts_split[1], 0) if len(parts_split) > 1 and parts_split[1] else 0
-                    num = tens * 10 + ones
+        # finditer()を使ってマッチオブジェクトを取得
+        chapter_matches = list(chapter_pattern.finditer(draft_content))
+
+        if chapter_matches:
+            # 章番号とタイトルを取得して出力
+            for ch_match in chapter_matches:
+                ch_num_str = ch_match.group(1)
+                ch_title = ch_match.group(2) if ch_match.group(2) else ""
+
+                if ch_num_str.isdigit():
+                    ch_num = int(ch_num_str)
                 else:
-                    num = KANJI_TO_NUM.get(ch_num_str, 0)
-                chapter_count = max(chapter_count, num)
+                    # 漢数字を数値に変換
+                    if '十' in ch_num_str:
+                        parts_split = ch_num_str.split('十')
+                        tens = KANJI_TO_NUM.get(parts_split[0], 1) if parts_split[0] else 1
+                        ones = KANJI_TO_NUM.get(parts_split[1], 0) if len(parts_split) > 1 and parts_split[1] else 0
+                        ch_num = tens * 10 + ones
+                    else:
+                        ch_num = KANJI_TO_NUM.get(ch_num_str, 0)
 
-        if chapter_count == 0:
-            chapter_count = 5
-
-        for i in range(1, chapter_count + 1):
-            template += f"\n## 第{num_to_kanji(i)}章\n\n"
+                # 章の見出しを追加（タイトルがあれば含める）
+                if ch_title.strip():
+                    template += f"\n## 第{num_to_kanji(ch_num)}章「{ch_title.strip()}」\n\n"
+                else:
+                    template += f"\n## 第{num_to_kanji(ch_num)}章\n\n"
+        else:
+            # 章が見つからない場合はデフォルトで5章生成
+            for i in range(1, 6):
+                template += f"\n## 第{num_to_kanji(i)}章\n\n"
 
     # エピローグを追加
     if has_epilogue:
@@ -439,6 +463,12 @@ def draft_to_plot():
 ### 指示
 - テンプレートの見出し（# ## など）はそのまま維持してください
 - 草稿の内容を適切に各セクションへ振り分けてください
+- **各章の粗筋は500～1000文字程度で記述してください**
+  - 主要な出来事、登場人物の行動、会話の要点、感情の動きを含めてください
+  - 具体的なシーン描写や重要な伏線を明記してください
+  - 章の冒頭・中盤・結末の流れがわかるように構成してください
+- あらすじは全体の物語を簡潔にまとめてください（300～500文字程度）
+- 結末セクションは物語の締めくくりとして200～400文字程度で記述してください
 - 草稿に記載のない項目は、文脈から自然に補完してください
 - 出力はテンプレートのマークダウンのみとし、説明文や前置きは一切不要です"""
 
