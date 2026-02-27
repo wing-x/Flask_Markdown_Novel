@@ -37,7 +37,7 @@ def create_project():
     
     # デフォルトファイルを作成
     defaults = {
-        'character.md': '# キャラクター設定\n\n## 主人公\n\n- 名前：\n- 年齢：\n- 外見：\n- 性格：\n- 背景：\n',
+        'character.md': '# キャラクター設定\n\n## 主人公\n\n- 名前：\n- 役割：(メインキャラクター / サブキャラクター)\n- 年齢：\n- 外見：\n- 性格：\n- 背景：\n',
         'plot.md': '# プロット\n\n## あらすじ\n\n## 第一章\n\n## 第二章\n\n## 結末\n',
     }
     for filename, content in defaults.items():
@@ -112,7 +112,7 @@ def create_file(project, filename):
     project_dir = os.path.join(BASE_DIR, project)
     os.makedirs(project_dir, exist_ok=True)
     filepath = os.path.join(BASE_DIR, project, filename)
-    
+
     created = False
     if not os.path.exists(filepath):
         # ファイル名に応じたテンプレートを使用
@@ -120,11 +120,104 @@ def create_file(project, filename):
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(template)
         created = True
-    
+
     with open(filepath, 'r', encoding='utf-8') as f:
         content = f.read()
-    
+
     return jsonify({'content': content, 'created': created})
+
+@app.route('/api/projects/<project>/files/<path:filename>', methods=['DELETE'])
+def delete_file(project, filename):
+    """ファイルを削除"""
+    filepath = os.path.join(BASE_DIR, project, filename)
+    if not os.path.exists(filepath):
+        return jsonify({'error': 'ファイルが見つかりません'}), 404
+
+    try:
+        os.remove(filepath)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/projects/<project>/rename', methods=['POST'])
+def rename_file(project):
+    """ファイルまたはディレクトリをリネーム"""
+    data = request.json
+    old_path = data.get('old_path', '')
+    new_path = data.get('new_path', '')
+
+    if not old_path or not new_path:
+        return jsonify({'error': 'パスが指定されていません'}), 400
+
+    old_filepath = os.path.join(BASE_DIR, project, old_path)
+    new_filepath = os.path.join(BASE_DIR, project, new_path)
+
+    if not os.path.exists(old_filepath):
+        return jsonify({'error': '元のファイルが見つかりません'}), 404
+
+    if os.path.exists(new_filepath):
+        return jsonify({'error': '同名のファイルが既に存在します'}), 400
+
+    try:
+        # 新しいパスのディレクトリが存在しない場合は作成
+        new_dir = os.path.dirname(new_filepath)
+        if new_dir and not os.path.exists(new_dir):
+            os.makedirs(new_dir, exist_ok=True)
+
+        os.rename(old_filepath, new_filepath)
+        return jsonify({'success': True, 'new_path': new_path})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/projects/<project>/directories', methods=['POST'])
+def create_directory(project):
+    """ディレクトリを作成"""
+    data = request.json
+    dir_path = data.get('path', '')
+
+    if not dir_path:
+        return jsonify({'error': 'パスが指定されていません'}), 400
+
+    full_path = os.path.join(BASE_DIR, project, dir_path)
+
+    if os.path.exists(full_path):
+        return jsonify({'error': '同名のディレクトリが既に存在します'}), 400
+
+    try:
+        os.makedirs(full_path, exist_ok=True)
+        return jsonify({'success': True, 'path': dir_path})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/projects/<project>/move', methods=['POST'])
+def move_file(project):
+    """ファイルを移動"""
+    data = request.json
+    source_path = data.get('source', '')
+    dest_path = data.get('destination', '')
+
+    if not source_path or not dest_path:
+        return jsonify({'error': 'パスが指定されていません'}), 400
+
+    source_filepath = os.path.join(BASE_DIR, project, source_path)
+    dest_filepath = os.path.join(BASE_DIR, project, dest_path)
+
+    if not os.path.exists(source_filepath):
+        return jsonify({'error': '元のファイルが見つかりません'}), 404
+
+    if os.path.exists(dest_filepath):
+        return jsonify({'error': '移動先に同名のファイルが既に存在します'}), 400
+
+    try:
+        # 移動先のディレクトリが存在しない場合は作成
+        dest_dir = os.path.dirname(dest_filepath)
+        if dest_dir and not os.path.exists(dest_dir):
+            os.makedirs(dest_dir, exist_ok=True)
+
+        os.rename(source_filepath, dest_filepath)
+        return jsonify({'success': True, 'new_path': dest_path})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 def get_template(filename):
     """ファイル名に応じたテンプレートを返す"""
@@ -170,7 +263,7 @@ def get_template(filename):
         'character.md': (
             '# キャラクター設定\n\n'
             '## 主人公\n\n'
-            '- 名前：\n- 年齢：\n- 外見：\n- 性格：\n- 背景：\n\n'
+            '- 名前：\n- 役割：(メインキャラクター / サブキャラクター)\n- 年齢：\n- 外見：\n- 性格：\n- 背景：\n\n'
             '## サブキャラクター\n\n'
         ),
         'plot.md': (
@@ -736,10 +829,15 @@ def generate():
         f'## {k}\n{v}' for k, v in project_context.items()
     )
     
+    # キャラクター役割を取得
+    character_role = data.get('character_role', 'メインキャラクター')
+
     prompts = {
         'generate_character': f"""以下のプロジェクト設定を参考に、詳細なキャラクタープロファイルを提案してください。
 
 {ctx_text}
+
+キャラクターの役割: {character_role}
 
 追加の要望: {extra_context}
 
@@ -749,6 +847,7 @@ def generate():
 
 ## 基本情報
 - 名前:
+- 役割: {character_role}
 - 年齢:
 - 性別:
 - 職業:

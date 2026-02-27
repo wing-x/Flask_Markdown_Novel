@@ -87,6 +87,11 @@
           <button onclick="createCustomFile()">＋ 作成</button>
         </div>
 
+        <div id="custom-dir-controls">
+          <input type="text" id="new-dir-name" placeholder="ディレクトリ名">
+          <button onclick="createDirectory()">📁 作成</button>
+        </div>
+
         <ul id="file-list"></ul>
       </div>
     </aside>
@@ -131,6 +136,13 @@
             <option value="長編">長編 (10万字前後 / 20-30章)</option>
           </select>
         </div>
+        <div id="character-role-selector" style="display:none; margin: 10px 0;">
+          <label style="font-weight: bold; display: block; margin-bottom: 5px;">👤 キャラクターの役割:</label>
+          <select id="character-role-select" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
+            <option value="メインキャラクター" selected>メインキャラクター</option>
+            <option value="サブキャラクター">サブキャラクター</option>
+          </select>
+        </div>
         <div id="claude-input-area">
           <textarea id="claude-context" placeholder="追加の指示・要望を入力（任意）"></textarea>
           <button id="claude-run-btn" onclick="runClaudeAction()" disabled>実行</button>
@@ -145,6 +157,50 @@
   </div>
 
   <div id="toast"></div>
+
+  <!-- ファイル操作モーダル -->
+  <div id="file-context-menu" class="context-menu" style="display:none;">
+    <div class="context-menu-item" onclick="renameFileDialog()">✏️ リネーム</div>
+    <div class="context-menu-item" onclick="moveFileDialog()">📦 移動</div>
+    <div class="context-menu-item" onclick="deleteFileDialog()">🗑️ 削除</div>
+  </div>
+
+  <!-- リネームダイアログ -->
+  <div id="rename-dialog" class="modal" style="display:none;">
+    <div class="modal-content">
+      <h3>ファイル名を変更</h3>
+      <input type="text" id="rename-input" placeholder="新しいファイル名">
+      <div class="modal-buttons">
+        <button onclick="confirmRename()">変更</button>
+        <button onclick="closeModal('rename-dialog')">キャンセル</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 移動ダイアログ -->
+  <div id="move-dialog" class="modal" style="display:none;">
+    <div class="modal-content">
+      <h3>ファイルを移動</h3>
+      <p>移動先のディレクトリを入力してください（例: characters/）</p>
+      <input type="text" id="move-input" placeholder="ディレクトリ名/">
+      <div class="modal-buttons">
+        <button onclick="confirmMove()">移動</button>
+        <button onclick="closeModal('move-dialog')">キャンセル</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 削除確認ダイアログ -->
+  <div id="delete-dialog" class="modal" style="display:none;">
+    <div class="modal-content">
+      <h3>ファイルを削除</h3>
+      <p id="delete-confirm-text"></p>
+      <div class="modal-buttons">
+        <button onclick="confirmDelete()" style="background-color: #c0392b;">削除</button>
+        <button onclick="closeModal('delete-dialog')">キャンセル</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/js/app.js"></script>
 </body>
