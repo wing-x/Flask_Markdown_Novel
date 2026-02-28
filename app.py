@@ -1245,11 +1245,28 @@ def generate_character_from_draft():
         if series_ctx:
             series_ctx_text = f'\n\n## シリーズ共通設定（既存キャラクターとの整合性を保つこと）\n{series_ctx}'
 
+    # 既存のcharacter.mdを読み込む
+    character_path = os.path.join(project_dir, 'character.md')
+    existing_characters_text = ''
+    if os.path.exists(character_path):
+        with open(character_path, 'r', encoding='utf-8') as f:
+            existing_characters_content = f.read().strip()
+            if existing_characters_content:
+                existing_characters_text = f"""
+
+## 既存キャラクター情報
+以下は既に作成されているキャラクターです。これらとの関係性や整合性を考慮してください：
+
+{existing_characters_content}
+"""
+
     prompt = f"""以下のプロット展開案から「{character_name}」というキャラクターの情報を抽出し、詳細なキャラクタープロファイルを作成してください。
 {series_ctx_text}
 
 ## プロット展開案
 {draft_content}
+
+{existing_characters_text}
 
 ## 出力形式
 
@@ -1337,6 +1354,23 @@ def character_chat_start():
         if series_ctx:
             series_ctx_text = f'\n\n## シリーズ共通設定（既存キャラクターとの整合性を保つこと）\n{series_ctx}'
 
+    # 既存のcharacter.mdを読み込む
+    character_path = os.path.join(project_dir, 'character.md')
+    existing_characters = ''
+    if os.path.exists(character_path):
+        with open(character_path, 'r', encoding='utf-8') as f:
+            existing_characters = f.read().strip()
+
+    character_info_section = ""
+    if existing_characters:
+        character_info_section = f"""
+
+## 既存キャラクター情報
+以下は既に作成されているキャラクターです。必要に応じて参照し、関係性や整合性を考慮してください：
+
+{existing_characters}
+"""
+
     # モードに応じてプロンプトを構築
     if mode == 'new':
         # 新規作成モード
@@ -1355,11 +1389,14 @@ def character_chat_start():
 
 {plot_info_section}
 
+{character_info_section}
+
 ## 役割
 1. {character_role}として魅力的なキャラクタープロファイルの初案を提示してください
 2. キャラクター名も含めて提案してください
-3. ユーザーからの修正要望に応じて、キャラクター設定を調整してください
-4. 常に以下のフォーマットでキャラクター情報を出力してください："""
+3. ユーザーが既存キャラクターとの関係性を指定した場合（例：「主人公のライバル」）、既存キャラクター情報を参照して整合性のあるキャラクターを作成してください
+4. ユーザーからの修正要望に応じて、キャラクター設定を調整してください
+5. 常に以下のフォーマットでキャラクター情報を出力してください："""
 
         initial_user_message = f'{character_role}のキャラクター設定を提案してください。キャラクター名も含めて提案してください。'
 
@@ -1381,10 +1418,13 @@ def character_chat_start():
 ## プロット展開案
 {draft_content}
 
+{character_info_section}
+
 ## 役割
 1. プロット展開案から{character_name}の情報を抽出し、詳細なキャラクタープロファイルの初案を提示してください
-2. ユーザーからの修正要望に応じて、キャラクター設定を調整してください
-3. 常に以下のフォーマットでキャラクター情報を出力してください："""
+2. 既存キャラクター情報がある場合は、それらとの関係性や整合性を考慮してください
+3. ユーザーからの修正要望に応じて、キャラクター設定を調整してください
+4. 常に以下のフォーマットでキャラクター情報を出力してください："""
 
         initial_user_message = f'{character_name}のキャラクター設定を提案してください。'
 
