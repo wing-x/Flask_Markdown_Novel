@@ -237,6 +237,14 @@
               <option value="">-- キャラクターを選択 --</option>
             </select>
           </div>
+
+          <!-- チャット生成モード切り替え -->
+          <div style="margin-top: 10px;">
+            <label style="display: flex; align-items: center; gap: 8px;">
+              <input type="checkbox" id="character-chat-mode-checkbox" style="width: auto;">
+              <span>💬 チャットで対話的に生成する</span>
+            </label>
+          </div>
         </div>
         <div id="claude-input-area">
           <textarea id="claude-context" placeholder="追加の指示・要望を入力（任意）"></textarea>
@@ -409,6 +417,41 @@
       <div class="modal-buttons">
         <button onclick="confirmDelete()" style="background-color: #c0392b;">削除</button>
         <button onclick="closeModal('delete-dialog')">キャンセル</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- キャラクターチャットモーダル -->
+  <div id="character-chat-modal" class="modal" style="display:none;">
+    <div class="modal-content" style="max-width: 800px; max-height: 90vh; display: flex; flex-direction: column;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+        <h3 style="margin: 0;">💬 キャラクター対話生成</h3>
+        <button onclick="closeCharacterChatModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #999;">&times;</button>
+      </div>
+
+      <div id="character-chat-info" style="background: #f0f4ff; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 14px; color: #555;">
+        <strong id="chat-character-name"></strong> の設定をチャットで調整できます
+      </div>
+
+      <!-- チャットメッセージエリア -->
+      <div id="character-chat-messages" style="flex: 1; overflow-y: auto; border: 1px solid #ddd; border-radius: 6px; padding: 15px; background: #fafafa; margin-bottom: 15px; min-height: 300px; max-height: 400px;">
+        <!-- メッセージがここに追加される -->
+      </div>
+
+      <!-- 入力エリア -->
+      <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+        <textarea id="character-chat-input" placeholder="修正要望を入力してください（例：年齢を25歳に変更してください）"
+                  style="flex: 1; padding: 10px; border-radius: 6px; border: 1px solid #ccc; resize: vertical; min-height: 60px; font-size: 14px;"></textarea>
+        <button id="character-chat-send-btn" onclick="sendCharacterChatMessage()"
+                style="padding: 10px 20px; background: #5a67d8; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; white-space: nowrap;">
+          送信
+        </button>
+      </div>
+
+      <!-- ボタンエリア -->
+      <div class="modal-buttons">
+        <button onclick="finalizeCharacterChat()" style="background-color: #27ae60;">✓ この内容で確定</button>
+        <button onclick="closeCharacterChatModal()" style="background-color: #95a5a6;">キャンセル</button>
       </div>
     </div>
   </div>

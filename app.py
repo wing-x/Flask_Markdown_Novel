@@ -15,6 +15,9 @@ client = anthropic.Anthropic()
 # シリーズ関連定数
 SERIES_PREFIX = '_series_'
 
+# キャラクター生成チャットセッション管理
+character_chat_sessions = {}
+
 def get_series_dir(series_name):
     return os.path.join(BASE_DIR, SERIES_PREFIX + series_name)
 
@@ -1306,6 +1309,239 @@ def generate_character_from_draft():
     generated = message.content[0].text.strip()
 
     return jsonify({'result': generated})
+
+@app.route('/api/claude/character_chat_start', methods=['POST'])
+def character_chat_start():
+    """キャラクター生成のチャットセッションを開始する"""
+    data = request.json
+    project = data.get('project', '')
+    series = data.get('series', '') or None
+    character_name = data.get('character_name', '')
+    character_role = data.get('character_role', '')  # 新規作成モード用
+    mode = data.get('mode', 'from_draft')  # from_draft または new
+
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    # 新規作成モードでキャラクター名が指定されていない場合は後で生成
+    if mode == 'from_draft' and not character_name:
+        return jsonify({'error': 'キャラクター名が指定されていません'}), 400
+
+    project_dir = os.path.join(BASE_DIR, project)
+
+    # シリーズ聖典があれば追加コンテキストとして使う
+    series_ctx_text = ''
+    if series or detect_series_from_project(project):
+        s = series or detect_series_from_project(project)
+        series_ctx, _ = build_context_text(project, series=s, include_plot=False)
+        if series_ctx:
+            series_ctx_text = f'\n\n## シリーズ共通設定（既存キャラクターとの整合性を保つこと）\n{series_ctx}'
+
+    # モードに応じてプロンプトを構築
+    if mode == 'new':
+        # 新規作成モード
+        plot_path = os.path.join(project_dir, 'plot.md')
+        plot_content = ''
+        if os.path.exists(plot_path):
+            with open(plot_path, 'r', encoding='utf-8') as f:
+                plot_content = f.read().strip()
+
+        plot_info_section = f"## プロット情報\n{plot_content}" if plot_content else ""
+
+        system_prompt = f"""あなたは小説のキャラクター設定を作成するアシスタントです。
+ユーザーと対話しながら、{character_role}の詳細なプロファイルを作成します。
+
+{series_ctx_text}
+
+{plot_info_section}
+
+## 役割
+1. {character_role}として魅力的なキャラクタープロファイルの初案を提示してください
+2. キャラクター名も含めて提案してください
+3. ユーザーからの修正要望に応じて、キャラクター設定を調整してください
+4. 常に以下のフォーマットでキャラクター情報を出力してください："""
+
+        initial_user_message = f'{character_role}のキャラクター設定を提案してください。キャラクター名も含めて提案してください。'
+
+    else:
+        # plot_draftから生成モード
+        draft_path = os.path.join(project_dir, 'plot_draft.md')
+        if not os.path.exists(draft_path):
+            return jsonify({'error': 'plot_draft.md がプロジェクト内に見つかりません'}), 404
+
+        with open(draft_path, 'r', encoding='utf-8') as f:
+            draft_content = f.read().strip()
+
+        system_prompt = f"""あなたは小説のキャラクター設定を作成するアシスタントです。
+ユーザーと対話しながら、「{character_name}」というキャラクターの詳細なプロファイルを作成します。
+
+以下のプロット展開案を参考にしてください：
+{series_ctx_text}
+
+## プロット展開案
+{draft_content}
+
+## 役割
+1. プロット展開案から{character_name}の情報を抽出し、詳細なキャラクタープロファイルの初案を提示してください
+2. ユーザーからの修正要望に応じて、キャラクター設定を調整してください
+3. 常に以下のフォーマットでキャラクター情報を出力してください："""
+
+        initial_user_message = f'{character_name}のキャラクター設定を提案してください。'
+
+    # 共通のフォーマット部分を追加
+    system_prompt += """
+
+# キャラクター設定
+
+## 基本情報
+- 名前:
+- 役割:
+- 年齢:
+- 性別:
+- 職業:
+
+## 外見
+- 身長:
+- 体格:
+- 髪型・髪色:
+- 目の色:
+- 特徴的な外見:
+
+## 性格
+- 基本的な性格:
+- 長所:
+- 短所:
+- 癖・口癖:
+
+## 背景
+- 生い立ち:
+- 家族構成:
+- 重要な過去の出来事:
+
+## 目標・動機
+- 物語における目標:
+- その目標を持つ理由:
+
+## 人間関係
+- (他キャラクターとの関係)
+
+## その他
+- (追加情報)
+
+## 指示事項
+- ユーザーの修正要望には柔軟に対応してください
+- 修正時は、変更した部分を明確にしてください
+- 物語の世界観との整合性を保ってください"""
+
+    # 初回のキャラクター情報を生成
+    initial_message = client.messages.create(
+        model='claude-sonnet-4-6',
+        max_tokens=5000,
+        system=system_prompt,
+        messages=[{'role': 'user', 'content': initial_user_message}],
+        timeout=300.0
+    )
+
+    initial_response = initial_message.content[0].text.strip()
+
+    # セッションIDを生成
+    import time
+    session_name = character_name if character_name else character_role
+    session_id = f"{project}_{session_name}_{int(time.time())}"
+
+    # セッション情報を保存
+    character_chat_sessions[session_id] = {
+        'project': project,
+        'series': series,
+        'character_name': character_name if character_name else '新規キャラクター',
+        'system_prompt': system_prompt,
+        'messages': [
+            {'role': 'user', 'content': initial_user_message},
+            {'role': 'assistant', 'content': initial_response}
+        ]
+    }
+
+    return jsonify({
+        'session_id': session_id,
+        'response': initial_response
+    })
+
+@app.route('/api/claude/character_chat_continue', methods=['POST'])
+def character_chat_continue():
+    """キャラクター生成チャットを継続する"""
+    data = request.json
+    session_id = data.get('session_id', '')
+    user_message = data.get('message', '')
+
+    if not session_id or session_id not in character_chat_sessions:
+        return jsonify({'error': '無効なセッションIDです'}), 400
+
+    if not user_message:
+        return jsonify({'error': 'メッセージが空です'}), 400
+
+    session = character_chat_sessions[session_id]
+
+    # メッセージ履歴に追加
+    session['messages'].append({'role': 'user', 'content': user_message})
+
+    # Claude APIを呼び出し
+    message = client.messages.create(
+        model='claude-sonnet-4-6',
+        max_tokens=5000,
+        system=session['system_prompt'],
+        messages=session['messages'],
+        timeout=300.0
+    )
+
+    response = message.content[0].text.strip()
+
+    # レスポンスをメッセージ履歴に追加
+    session['messages'].append({'role': 'assistant', 'content': response})
+
+    return jsonify({'response': response})
+
+@app.route('/api/claude/character_chat_finalize', methods=['POST'])
+def character_chat_finalize():
+    """チャットで作成したキャラクター情報を確定して保存する"""
+    data = request.json
+    session_id = data.get('session_id', '')
+
+    if not session_id or session_id not in character_chat_sessions:
+        return jsonify({'error': '無効なセッションIDです'}), 400
+
+    session = character_chat_sessions[session_id]
+
+    # 最終的なキャラクター情報を取得（最後のアシスタントのメッセージ）
+    final_character_info = None
+    for msg in reversed(session['messages']):
+        if msg['role'] == 'assistant':
+            final_character_info = msg['content']
+            break
+
+    if not final_character_info:
+        return jsonify({'error': 'キャラクター情報が見つかりません'}), 400
+
+    # セッションを削除
+    del character_chat_sessions[session_id]
+
+    return jsonify({
+        'result': final_character_info,
+        'message': 'キャラクター情報を確定しました'
+    })
+
+@app.route('/api/claude/character_chat_cancel', methods=['POST'])
+def character_chat_cancel():
+    """キャラクター生成チャットをキャンセルする"""
+    data = request.json
+    session_id = data.get('session_id', '')
+
+    if not session_id or session_id not in character_chat_sessions:
+        return jsonify({'error': '無効なセッションIDです'}), 400
+
+    # セッションを削除
+    del character_chat_sessions[session_id]
+
+    return jsonify({'message': 'チャットセッションをキャンセルしました'})
 
 @app.route('/api/claude/generate_catchcopy', methods=['POST'])
 def generate_catchcopy():

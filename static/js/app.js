@@ -874,10 +874,22 @@ async function runClaudeAction() {
   // キャラクター生成の場合は生成モードに応じて処理
   if (selectedAction === 'generate_character') {
     const mode = document.getElementById('character-mode-select').value;
+    const useChatMode = document.getElementById('character-chat-mode-checkbox').checked;
 
     if (mode === 'new') {
       // 新規作成モード
-      requestBody.character_role = document.getElementById('character-role-select').value;
+      const characterRole = document.getElementById('character-role-select').value;
+
+      // チャットモードの場合
+      if (useChatMode) {
+        console.log('Starting new character chat with role:', characterRole);
+        await startCharacterChat(null, mode, characterRole);
+        btn.disabled = false;
+        btn.textContent = '実行';
+        return;
+      }
+
+      requestBody.character_role = characterRole;
     } else {
       // plot_draftから生成モード
       const characterName = document.getElementById('draft-character-select').value;
@@ -888,7 +900,16 @@ async function runClaudeAction() {
         return;
       }
 
-      // 別のAPIエンドポイントを使用
+      // チャットモードの場合
+      if (useChatMode) {
+        console.log('Starting character chat for:', characterName);
+        await startCharacterChat(characterName, mode);
+        btn.disabled = false;
+        btn.textContent = '実行';
+        return;
+      }
+
+      // 通常モード: 別のAPIエンドポイントを使用
       const charRes = await fetch('/api/claude/generate_character_from_draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2157,3 +2178,229 @@ function insertSynopsisToEditor() {
     showToast('エディタが開いていません', '#a06020');
   }
 }
+
+// ========================================
+// キャラクターチャット機能
+// ========================================
+
+let currentChatSessionId = null;
+
+async function startCharacterChat(characterName, mode = 'from_draft', characterRole = '') {
+  console.log('startCharacterChat called with:', characterName, mode, characterRole);
+  console.log('currentProject:', currentProject);
+  console.log('currentSeries:', currentSeries);
+
+  try {
+    const requestBody = {
+      project: currentProject,
+      series: currentSeries || undefined,
+      character_name: characterName,
+      mode: mode
+    };
+
+    // 新規作成モードの場合はロールを追加
+    if (mode === 'new') {
+      requestBody.character_role = characterRole;
+    }
+
+    const res = await fetch('/api/claude/character_chat_start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+
+    console.log('Response status:', res.status);
+
+    if (!res.ok) {
+      const data = await res.json();
+      console.error('Error response:', data);
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      return;
+    }
+
+    const data = await res.json();
+    console.log('Success response:', data);
+    currentChatSessionId = data.session_id;
+
+    // モーダルを開く
+    document.getElementById('chat-character-name').textContent = characterName || '新規キャラクター';
+    const messagesArea = document.getElementById('character-chat-messages');
+    messagesArea.innerHTML = '';
+
+    // 初回のアシスタントメッセージを追加
+    addChatMessage('assistant', data.response);
+
+    // モーダルを表示
+    const modal = document.getElementById('character-chat-modal');
+    console.log('Opening modal:', modal);
+    modal.style.display = 'block';
+    document.getElementById('character-chat-input').value = '';
+    document.getElementById('character-chat-input').focus();
+
+    showToast('チャットセッションを開始しました', '#1a7a40');
+
+  } catch (e) {
+    showToast('通信エラーが発生しました: ' + e.message, '#c0392b');
+    console.error('Exception in startCharacterChat:', e);
+  }
+}
+
+async function sendCharacterChatMessage() {
+  const input = document.getElementById('character-chat-input');
+  const message = input.value.trim();
+
+  if (!message) {
+    showToast('メッセージを入力してください', '#a06020');
+    return;
+  }
+
+  if (!currentChatSessionId) {
+    showToast('セッションが無効です', '#c0392b');
+    return;
+  }
+
+  // ユーザーメッセージを表示
+  addChatMessage('user', message);
+  input.value = '';
+
+  // 送信ボタンを無効化
+  const sendBtn = document.getElementById('character-chat-send-btn');
+  const originalText = sendBtn.textContent;
+  sendBtn.disabled = true;
+  sendBtn.textContent = '送信中...';
+
+  try {
+    const res = await fetch('/api/claude/character_chat_continue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: currentChatSessionId,
+        message: message
+      })
+    });
+
+    if (!res.ok) {
+      const data = await res.json();
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      return;
+    }
+
+    const data = await res.json();
+
+    // アシスタントメッセージを表示
+    addChatMessage('assistant', data.response);
+
+  } catch (e) {
+    showToast('通信エラーが発生しました', '#c0392b');
+    console.error(e);
+  } finally {
+    sendBtn.disabled = false;
+    sendBtn.textContent = originalText;
+  }
+}
+
+function addChatMessage(role, content) {
+  const messagesArea = document.getElementById('character-chat-messages');
+  const messageDiv = document.createElement('div');
+  messageDiv.style.marginBottom = '15px';
+
+  if (role === 'user') {
+    messageDiv.innerHTML = `
+      <div style="text-align: right;">
+        <div style="display: inline-block; max-width: 70%; background: #5a67d8; color: white; padding: 10px 15px; border-radius: 12px; text-align: left; word-wrap: break-word;">
+          ${escapeHtml(content)}
+        </div>
+      </div>
+    `;
+  } else {
+    messageDiv.innerHTML = `
+      <div style="text-align: left;">
+        <div style="font-size: 11px; color: #999; margin-bottom: 4px;">🤖 アシスタント</div>
+        <div style="display: inline-block; max-width: 85%; background: white; border: 1px solid #ddd; padding: 10px 15px; border-radius: 12px; text-align: left; word-wrap: break-word; white-space: pre-wrap;">
+          ${escapeHtml(content)}
+        </div>
+      </div>
+    `;
+  }
+
+  messagesArea.appendChild(messageDiv);
+  messagesArea.scrollTop = messagesArea.scrollHeight;
+}
+
+async function finalizeCharacterChat() {
+  if (!currentChatSessionId) {
+    showToast('セッションが無効です', '#c0392b');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/claude/character_chat_finalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: currentChatSessionId
+      })
+    });
+
+    if (!res.ok) {
+      const data = await res.json();
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      return;
+    }
+
+    const data = await res.json();
+
+    // 結果を Claude パネルに表示
+    claudeResult = data.result;
+    const resultEl = document.getElementById('claude-result');
+    resultEl.style.display = 'block';
+    resultEl.textContent = claudeResult;
+    document.getElementById('insert-result-btn').style.display = 'inline-block';
+
+    showToast('キャラクター情報を確定しました', '#1a7a40');
+    closeCharacterChatModal();
+
+  } catch (e) {
+    showToast('通信エラーが発生しました', '#c0392b');
+    console.error(e);
+  }
+}
+
+async function closeCharacterChatModal() {
+  // セッションをキャンセル
+  if (currentChatSessionId) {
+    try {
+      await fetch('/api/claude/character_chat_cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: currentChatSessionId
+        })
+      });
+    } catch (e) {
+      console.error('Failed to cancel session:', e);
+    }
+    currentChatSessionId = null;
+  }
+
+  document.getElementById('character-chat-modal').style.display = 'none';
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Enterキーで送信
+document.addEventListener('DOMContentLoaded', () => {
+  const chatInput = document.getElementById('character-chat-input');
+  if (chatInput) {
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendCharacterChatMessage();
+      }
+    });
+  }
+});
