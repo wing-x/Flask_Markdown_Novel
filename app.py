@@ -927,7 +927,7 @@ def draft_to_plot():
 - 出力はテンプレートのマークダウンのみとし、説明文や前置きは一切不要です"""
 
     message = client.messages.create(
-        model='claude-sonnet-4-6',
+        model='claude-opus-4-6',
         max_tokens=30000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=600.0  # 10分のタイムアウト
@@ -1016,7 +1016,7 @@ def plot_draft_to_timeline():
 5. マークダウン形式で出力し、上記のフォーマットを厳守してください"""
 
     message = client.messages.create(
-        model='claude-sonnet-4-6',
+        model='claude-opus-4-6',
         max_tokens=10000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=600.0
@@ -1126,7 +1126,7 @@ def plot_draft_to_worldbuilding():
 5. マークダウン形式で出力し、上記のフォーマットを厳守してください"""
 
     message = client.messages.create(
-        model='claude-sonnet-4-6',
+        model='claude-opus-4-6',
         max_tokens=10000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=600.0
@@ -1187,7 +1187,7 @@ def plot_draft_to_characters():
 - JSON配列のみを出力し、他の説明文は一切不要です"""
 
     message = client.messages.create(
-        model='claude-sonnet-4-6',
+        model='claude-opus-4-6',
         max_tokens=1000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=60.0
@@ -1247,7 +1247,7 @@ def list_characters_from_file():
 - JSON配列のみを出力し、他の説明文は一切不要です"""
 
     message = client.messages.create(
-        model='claude-sonnet-4-6',
+        model='claude-opus-4-6',
         max_tokens=1000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=60.0
@@ -1376,7 +1376,7 @@ def generate_character_from_draft():
 4. マークダウン形式で出力し、説明文や前置きは不要です"""
 
     message = client.messages.create(
-        model='claude-sonnet-4-6',
+        model='claude-opus-4-6',
         max_tokens=5000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=300.0
@@ -1556,7 +1556,7 @@ def character_chat_start():
 
     # 初回のキャラクター情報を生成
     initial_message = client.messages.create(
-        model='claude-sonnet-4-6',
+        model='claude-opus-4-6',
         max_tokens=5000,
         system=system_prompt,
         messages=[{'role': 'user', 'content': initial_user_message}],
@@ -1607,7 +1607,7 @@ def character_chat_continue():
 
     # Claude APIを呼び出し
     message = client.messages.create(
-        model='claude-sonnet-4-6',
+        model='claude-opus-4-6',
         max_tokens=5000,
         system=session['system_prompt'],
         messages=session['messages'],
@@ -1753,7 +1753,7 @@ def generate_catchcopy():
 **解説**: [解説文]"""
 
     message = client.messages.create(
-        model='claude-sonnet-4-6',
+        model='claude-opus-4-6',
         max_tokens=10000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=600.0
@@ -2016,7 +2016,7 @@ def generate_chapters():
 
         # max_tokensを増やして十分な長さの本文を生成（3000〜5000字 ≒ 8000〜12000トークン程度）
         message = client.messages.create(
-            model='claude-sonnet-4-6',
+            model='claude-opus-4-6',
             max_tokens=20000,  # プロットに忠実な長めの本文を生成するため増量
             messages=[{'role': 'user', 'content': prompt}],
             timeout=1800.0  # 30分のタイムアウト
@@ -2216,7 +2216,7 @@ def run_notation_check(project_dir, project, series):
     def generate_stream():
         try:
             with client.messages.stream(
-                model='claude-sonnet-4-6',
+                model='claude-opus-4-6',
                 max_tokens=16000,
                 messages=[{'role': 'user', 'content': prompt}],
             ) as stream:
@@ -2526,7 +2526,7 @@ def run_consistency_check():
     def generate_stream():
         try:
             with client.messages.stream(
-                model='claude-sonnet-4-6',
+                model='claude-opus-4-6',
                 max_tokens=16000,  # 整合性チェック結果が途中で切れないように大幅に増加
                 messages=[{'role': 'user', 'content': prompt}],
             ) as stream:
@@ -2650,7 +2650,7 @@ def fix_chapter_file():
     # Claude APIで修正版を生成
     try:
         message = client.messages.create(
-            model='claude-sonnet-4-6',
+            model='claude-opus-4-6',
             max_tokens=20000,
             messages=[{'role': 'user', 'content': prompt}],
             timeout=1800.0
@@ -2756,7 +2756,7 @@ def fix_notation_issues():
 
             # Claude APIで修正版を生成
             message = client.messages.create(
-                model='claude-sonnet-4-6',
+                model='claude-opus-4-6',
                 max_tokens=20000,
                 messages=[{'role': 'user', 'content': prompt}],
                 timeout=1800.0
@@ -2870,7 +2870,7 @@ def fix_plot_inconsistencies():
 
     try:
         message = client.messages.create(
-            model='claude-sonnet-4-6',
+            model='claude-opus-4-6',
             max_tokens=8000,
             messages=[{'role': 'user', 'content': prompt}],
         )
@@ -3021,7 +3021,7 @@ def generate_spoiler_free_synopsis():
 
     try:
         message = client.messages.create(
-            model='claude-sonnet-4-6',
+            model='claude-opus-4-6',
             max_tokens=3000,
             messages=[{'role': 'user', 'content': prompt}],
         )
@@ -3274,7 +3274,7 @@ def generate():
         return jsonify({'error': '不明なアクション'}), 400
     
     message = client.messages.create(
-        model='claude-sonnet-4-6',
+        model='claude-opus-4-6',
         max_tokens=30000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=600.0  # 10分のタイムアウト
@@ -3455,7 +3455,7 @@ def generate_volume_summary():
         generated_text = ''
         try:
             with client.messages.stream(
-                model='claude-sonnet-4-6',
+                model='claude-opus-4-6',
                 max_tokens=3000,
                 messages=[{'role': 'user', 'content': prompt}],
             ) as stream:
