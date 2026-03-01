@@ -15,8 +15,9 @@ client = anthropic.Anthropic()
 # シリーズ関連定数
 SERIES_PREFIX = '_series_'
 
-# キャラクター生成チャットセッション管理
+# チャットセッション管理
 character_chat_sessions = {}
+plot_chat_sessions = {}
 
 def get_series_dir(series_name):
     return os.path.join(BASE_DIR, SERIES_PREFIX + series_name)
@@ -1664,6 +1665,269 @@ def character_chat_cancel():
 
     return jsonify({'message': 'チャットセッションをキャンセルしました'})
 
+@app.route('/api/claude/plot_chat_start', methods=['POST'])
+def plot_chat_start():
+    """プロット展開案のチャットセッションを開始する"""
+    data = request.json
+    project = data.get('project', '')
+    series = data.get('series', '') or None
+    length = data.get('length', '中編')
+
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    project_dir = os.path.join(BASE_DIR, project)
+
+    # 既存のplot.mdを読み込む
+    plot_path = os.path.join(project_dir, 'plot.md')
+    existing_plot = ''
+    if os.path.exists(plot_path):
+        with open(plot_path, 'r', encoding='utf-8') as f:
+            existing_plot = f.read().strip()
+
+    # character.mdを読み込む
+    character_path = os.path.join(project_dir, 'character.md')
+    characters_info = ''
+    if os.path.exists(character_path):
+        with open(character_path, 'r', encoding='utf-8') as f:
+            characters_info = f.read().strip()
+
+    # シリーズ聖典があれば追加コンテキストとして使う
+    series_ctx_text = ''
+    if series or detect_series_from_project(project):
+        s = series or detect_series_from_project(project)
+        series_ctx, _ = build_context_text(project, series=s, include_plot=False)
+        if series_ctx:
+            series_ctx_text = f'\n\n## シリーズ共通設定\n{series_ctx}'
+
+    existing_plot_section = f"\n\n## 既存のプロット\n{existing_plot}" if existing_plot else ""
+    characters_section = f"\n\n## キャラクター情報\n{characters_info}" if characters_info else ""
+
+    # 目標執筆量に応じた文字数の目安を設定
+    length_guidelines = {
+        '短編': '総文字数目標: 5,000文字前後、全3〜5章構成（部構造なし）',
+        '中編': '総文字数目標: 50,000文字前後、全10〜15章構成（2〜3部構成）',
+        '長編': '総文字数目標: 100,000文字前後、全20〜30章構成（3〜4部構成）'
+    }
+    length_guideline = length_guidelines.get(length, '総文字数目標と章数を適切に設定してください')
+
+    format_instruction = f"""
+## 出力形式
+
+以下の形式に厳密に従って、詳細なプロット展開案を作成してください：
+
+# プロット展開案
+## 『タイトル（仮題）』
+
+---
+
+## 全体構造の概観
+
+**{length_guideline}**
+
+| ブロック | 章 | 機能 | 文字数目安 |
+|---|---|---|---|
+| 第一部「[部タイトル]」 | 第1〜[章数]章 | [機能説明] | 約[文字数] |
+| 第二部「[部タイトル]」 | 第[章数]〜[章数]章 | [機能説明] | 約[文字数] |
+（目標執筆量に応じて部数を調整）
+
+---
+
+## 物語の核心について
+
+展開の中心となる主題やテーマ、物語が提示する主要な問いについて説明してください。
+複数の展開案がある場合は、それぞれの強みとテーマへの寄与度を記載してください。
+
+---
+
+## 登場人物の追加設定（必要な場合）
+
+プロット上必要な未設定キャラクターがいる場合、ここに記載してください。
+
+---
+
+## 第一部「[部タイトル]」　第1〜[章数]章　約[文字数]
+
+### 第1章「[章タイトル]」　約[文字数]
+
+**主な展開：**
+この章で起こる出来事を具体的に記述してください。
+場面、登場人物の行動、会話の要点、感情の動きなどを含めてください。
+
+**ポイント：**
+- この章の物語上の役割
+- 伏線の配置
+- キャラクターの成長や変化
+
+---
+
+（以下、各章について同様の形式で記述）
+
+---
+
+## 伏線一覧と回収タイミング
+
+| 伏線 | 設置章 | 回収章 | 内容 |
+|---|---|---|---|
+| [伏線の内容] | 第[章数]章 | 第[章数]章 | [詳細] |
+
+---
+
+## 読者を引きつけるポイント
+
+**①[ポイント1のタイトル]**
+説明
+
+**②[ポイント2のタイトル]**
+説明
+
+（3〜5つ程度）
+
+---
+
+## 章ごとの文字数配分まとめ
+
+| 章 | タイトル（仮） | 目安文字数 |
+|---|---|---|
+| 第1章 | [タイトル] | [文字数] |
+| 第2章 | [タイトル] | [文字数] |
+（全章を記載）
+| **合計** | | **約[総文字数]** |
+
+---
+"""
+
+    system_prompt = f"""あなたは小説のプロット展開案を作成するアシスタントです。
+ユーザーと対話しながら、魅力的なプロット展開案を作成します。
+
+目標執筆量: {length}
+
+{series_ctx_text}
+{existing_plot_section}
+{characters_section}
+
+{format_instruction}
+
+## 役割
+1. 上記の情報を参考に、魅力的なプロット展開案を提案してください
+2. ユーザーからの修正要望に応じて、プロットを調整してください
+3. 既存のプロットがある場合は、それを基に改善・拡張してください
+4. キャラクター情報がある場合は、それを活用してください
+5. **必ず上記の「出力形式」に従って、完全な構造のプロット展開案を出力してください**
+6. 見出しの階層（#、##、###）、太字マーカー（**）、表形式などを正確に維持してください
+7. **目標執筆量「{length}」に適した文字数と章数で構成してください**"""
+
+    initial_user_message = f'{length}の小説のプロット展開案を提案してください。'
+
+    # 初回のプロット案を生成
+    initial_message = client.messages.create(
+        model='claude-opus-4-6',
+        max_tokens=8000,
+        system=system_prompt,
+        messages=[{'role': 'user', 'content': initial_user_message}],
+        timeout=300.0
+    )
+
+    initial_response = initial_message.content[0].text.strip()
+
+    # セッションIDを生成
+    import time
+    session_id = f"{project}_plot_{int(time.time())}"
+
+    # セッション情報を保存
+    plot_chat_sessions[session_id] = {
+        'project': project,
+        'series': series,
+        'length': length,
+        'system_prompt': system_prompt,
+        'messages': [
+            {'role': 'user', 'content': initial_user_message},
+            {'role': 'assistant', 'content': initial_response}
+        ]
+    }
+
+    return jsonify({
+        'session_id': session_id,
+        'response': initial_response
+    })
+
+@app.route('/api/claude/plot_chat_continue', methods=['POST'])
+def plot_chat_continue():
+    """プロット展開案チャットを継続する"""
+    data = request.json
+    session_id = data.get('session_id', '')
+    user_message = data.get('message', '')
+
+    if not session_id or session_id not in plot_chat_sessions:
+        return jsonify({'error': '無効なセッションIDです'}), 400
+
+    if not user_message:
+        return jsonify({'error': 'メッセージが空です'}), 400
+
+    session = plot_chat_sessions[session_id]
+
+    # メッセージ履歴に追加
+    session['messages'].append({'role': 'user', 'content': user_message})
+
+    # Claude APIを呼び出し
+    message = client.messages.create(
+        model='claude-opus-4-6',
+        max_tokens=8000,
+        system=session['system_prompt'],
+        messages=session['messages'],
+        timeout=300.0
+    )
+
+    response = message.content[0].text.strip()
+
+    # レスポンスをメッセージ履歴に追加
+    session['messages'].append({'role': 'assistant', 'content': response})
+
+    return jsonify({'response': response})
+
+@app.route('/api/claude/plot_chat_finalize', methods=['POST'])
+def plot_chat_finalize():
+    """チャットで作成したプロット案を確定する"""
+    data = request.json
+    session_id = data.get('session_id', '')
+
+    if not session_id or session_id not in plot_chat_sessions:
+        return jsonify({'error': '無効なセッションIDです'}), 400
+
+    session = plot_chat_sessions[session_id]
+
+    # 最終的なプロット案を取得（最後のアシスタントのメッセージ）
+    final_plot = None
+    for msg in reversed(session['messages']):
+        if msg['role'] == 'assistant':
+            final_plot = msg['content']
+            break
+
+    if not final_plot:
+        return jsonify({'error': 'プロット案が見つかりません'}), 400
+
+    # セッションを削除
+    del plot_chat_sessions[session_id]
+
+    return jsonify({
+        'result': final_plot,
+        'message': 'プロット案を確定しました'
+    })
+
+@app.route('/api/claude/plot_chat_cancel', methods=['POST'])
+def plot_chat_cancel():
+    """プロット展開案チャットをキャンセルする"""
+    data = request.json
+    session_id = data.get('session_id', '')
+
+    if not session_id or session_id not in plot_chat_sessions:
+        return jsonify({'error': '無効なセッションIDです'}), 400
+
+    # セッションを削除
+    del plot_chat_sessions[session_id]
+
+    return jsonify({'message': 'チャットセッションをキャンセルしました'})
+
 @app.route('/api/claude/generate_catchcopy', methods=['POST'])
 def generate_catchcopy():
     """plot.md の内容を読み込み、魅力的なキャッチコピーを生成して catchcopy.md に保存する"""
@@ -3111,12 +3375,12 @@ def generate():
 現在の内容:
 {current_content}
 
-目標執筆量: {data.get('length', '中編')}
-- 短編: 5000文字前後（章数: 3-5章、部構造なし）
-- 中編: 5万文字前後（章数: 10-15章、2-3部構成）
-- 長編: 10万文字前後（章数: 20-30章、3-4部構成）
-
 追加の要望: {extra_context}
+
+目標執筆量: {data.get('length', '中編')}
+- 短編: 5,000文字前後（章数: 3-5章、部構造なし）
+- 中編: 50,000文字前後（章数: 10-15章、2-3部構成）
+- 長編: 100,000文字前後（章数: 20-30章、3-4部構成）
 
 ## 出力形式
 
@@ -3215,7 +3479,9 @@ def generate():
 
 4. キャラクター設定と世界観設定の内容を反映してください
 
-5. マークダウン形式で出力し、上記のフォーマットを厳守してください""",
+5. マークダウン形式で出力し、上記のフォーマットを厳守してください
+
+6. 見出しの階層（#、##、###）、太字マーカー（**）、表形式などを正確に維持してください""",
 
         'generate_timeline': f"""以下のプロジェクト設定を参考に、詳細な物語タイムラインを作成してください。
 

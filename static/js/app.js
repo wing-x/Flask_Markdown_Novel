@@ -920,7 +920,19 @@ async function runClaudeAction() {
   };
 
   if (selectedAction === 'plot_draft') {
-    requestBody.length = document.getElementById('plot-length-select').value;
+    const length = document.getElementById('plot-length-select').value;
+    const usePlotChatMode = document.getElementById('plot-chat-mode-checkbox').checked;
+
+    // チャットモードの場合
+    if (usePlotChatMode) {
+      console.log('Starting plot chat with length:', length);
+      await startPlotChat(length);
+      btn.disabled = false;
+      btn.textContent = '実行';
+      return;
+    }
+
+    requestBody.length = length;
   }
 
   // キャラクター生成の場合は生成モードに応じて処理
@@ -2296,6 +2308,7 @@ async function startCharacterChat(characterName, mode = 'from_draft', characterR
     const data = await res.json();
     console.log('Success response:', data);
     currentChatSessionId = data.session_id;
+    currentChatType = 'character';
 
     // モーダルを開く
     document.getElementById('chat-character-name').textContent = characterName || '新規キャラクター';
@@ -2317,60 +2330,6 @@ async function startCharacterChat(characterName, mode = 'from_draft', characterR
   } catch (e) {
     showToast('通信エラーが発生しました: ' + e.message, '#c0392b');
     console.error('Exception in startCharacterChat:', e);
-  }
-}
-
-async function sendCharacterChatMessage() {
-  const input = document.getElementById('character-chat-input');
-  const message = input.value.trim();
-
-  if (!message) {
-    showToast('メッセージを入力してください', '#a06020');
-    return;
-  }
-
-  if (!currentChatSessionId) {
-    showToast('セッションが無効です', '#c0392b');
-    return;
-  }
-
-  // ユーザーメッセージを表示
-  addChatMessage('user', message);
-  input.value = '';
-
-  // 送信ボタンを無効化
-  const sendBtn = document.getElementById('character-chat-send-btn');
-  const originalText = sendBtn.textContent;
-  sendBtn.disabled = true;
-  sendBtn.textContent = '送信中...';
-
-  try {
-    const res = await fetch('/api/claude/character_chat_continue', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: currentChatSessionId,
-        message: message
-      })
-    });
-
-    if (!res.ok) {
-      const data = await res.json();
-      showToast(data.error || 'エラーが発生しました', '#c0392b');
-      return;
-    }
-
-    const data = await res.json();
-
-    // アシスタントメッセージを表示
-    addChatMessage('assistant', data.response);
-
-  } catch (e) {
-    showToast('通信エラーが発生しました', '#c0392b');
-    console.error(e);
-  } finally {
-    sendBtn.disabled = false;
-    sendBtn.textContent = originalText;
   }
 }
 
@@ -2402,18 +2361,164 @@ function addChatMessage(role, content) {
   messagesArea.scrollTop = messagesArea.scrollHeight;
 }
 
-async function finalizeCharacterChat() {
-  if (!currentChatSessionId) {
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ========================================
+// プロット展開案チャット機能
+// ========================================
+
+let currentPlotChatSessionId = null;
+let currentChatType = null; // 'character' or 'plot'
+
+async function startPlotChat(length) {
+  console.log('startPlotChat called with length:', length);
+  console.log('currentProject:', currentProject);
+  console.log('currentSeries:', currentSeries);
+
+  try {
+    const res = await fetch('/api/claude/plot_chat_start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project: currentProject,
+        series: currentSeries || undefined,
+        length: length
+      })
+    });
+
+    console.log('Response status:', res.status);
+
+    if (!res.ok) {
+      const data = await res.json();
+      console.error('Error response:', data);
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      return;
+    }
+
+    const data = await res.json();
+    console.log('Success response:', data);
+    console.log('Setting currentPlotChatSessionId to:', data.session_id);
+    currentPlotChatSessionId = data.session_id;
+    currentChatType = 'plot';
+    console.log('currentPlotChatSessionId is now:', currentPlotChatSessionId);
+
+    // モーダルを開く
+    document.getElementById('chat-character-name').textContent = `プロット展開案 (${length})`;
+    const messagesArea = document.getElementById('character-chat-messages');
+    messagesArea.innerHTML = '';
+
+    // 初回のアシスタントメッセージを追加
+    addChatMessage('assistant', data.response);
+
+    // モーダルを表示
+    const modal = document.getElementById('character-chat-modal');
+    console.log('Opening modal:', modal);
+    modal.style.display = 'block';
+    document.getElementById('character-chat-input').value = '';
+    document.getElementById('character-chat-input').focus();
+
+    showToast('チャットセッションを開始しました', '#1a7a40');
+
+  } catch (e) {
+    showToast('通信エラーが発生しました: ' + e.message, '#c0392b');
+    console.error('Exception in startPlotChat:', e);
+  }
+}
+
+async function sendChatMessage() {
+  const input = document.getElementById('character-chat-input');
+  const message = input.value.trim();
+
+  if (!message) {
+    showToast('メッセージを入力してください', '#a06020');
+    return;
+  }
+
+  if (currentChatType === 'character' && !currentChatSessionId) {
+    showToast('セッションが無効です', '#c0392b');
+    return;
+  }
+
+  if (currentChatType === 'plot' && !currentPlotChatSessionId) {
+    showToast('セッションが無効です', '#c0392b');
+    return;
+  }
+
+  // ユーザーメッセージを表示
+  addChatMessage('user', message);
+  input.value = '';
+
+  // 送信ボタンを無効化
+  const sendBtn = document.getElementById('character-chat-send-btn');
+  const originalText = sendBtn.textContent;
+  sendBtn.disabled = true;
+  sendBtn.textContent = '送信中...';
+
+  try {
+    const endpoint = currentChatType === 'plot' ? '/api/claude/plot_chat_continue' : '/api/claude/character_chat_continue';
+    const sessionId = currentChatType === 'plot' ? currentPlotChatSessionId : currentChatSessionId;
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        message: message
+      })
+    });
+
+    if (!res.ok) {
+      const data = await res.json();
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      return;
+    }
+
+    const data = await res.json();
+
+    // アシスタントメッセージを表示
+    addChatMessage('assistant', data.response);
+
+  } catch (e) {
+    showToast('通信エラーが発生しました', '#c0392b');
+    console.error(e);
+  } finally {
+    sendBtn.disabled = false;
+    sendBtn.textContent = originalText;
+  }
+}
+
+async function finalizeChat() {
+  console.log('finalizeChat called');
+  console.log('currentChatType:', currentChatType);
+  console.log('currentChatSessionId:', currentChatSessionId);
+  console.log('currentPlotChatSessionId:', currentPlotChatSessionId);
+
+  if (currentChatType === 'character' && !currentChatSessionId) {
+    showToast('セッションが無効です', '#c0392b');
+    return;
+  }
+
+  if (currentChatType === 'plot' && !currentPlotChatSessionId) {
     showToast('セッションが無効です', '#c0392b');
     return;
   }
 
   try {
-    const res = await fetch('/api/claude/character_chat_finalize', {
+    const endpoint = currentChatType === 'plot' ? '/api/claude/plot_chat_finalize' : '/api/claude/character_chat_finalize';
+    const sessionId = currentChatType === 'plot' ? currentPlotChatSessionId : currentChatSessionId;
+
+    console.log('Using endpoint:', endpoint);
+    console.log('Using sessionId:', sessionId);
+
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        session_id: currentChatSessionId
+        session_id: sessionId
       })
     });
 
@@ -2432,8 +2537,9 @@ async function finalizeCharacterChat() {
     resultEl.textContent = claudeResult;
     document.getElementById('insert-result-btn').style.display = 'inline-block';
 
-    showToast('キャラクター情報を確定しました', '#1a7a40');
-    closeCharacterChatModal();
+    const itemType = currentChatType === 'plot' ? 'プロット案' : 'キャラクター情報';
+    showToast(`${itemType}を確定しました`, '#1a7a40');
+    closeChatModal();
 
   } catch (e) {
     showToast('通信エラーが発生しました', '#c0392b');
@@ -2441,9 +2547,14 @@ async function finalizeCharacterChat() {
   }
 }
 
-async function closeCharacterChatModal() {
+async function closeChatModal() {
+  console.log('closeChatModal called');
+  console.log('currentChatType:', currentChatType);
+  console.log('currentChatSessionId:', currentChatSessionId);
+  console.log('currentPlotChatSessionId:', currentPlotChatSessionId);
+
   // セッションをキャンセル
-  if (currentChatSessionId) {
+  if (currentChatType === 'character' && currentChatSessionId) {
     try {
       await fetch('/api/claude/character_chat_cancel', {
         method: 'POST',
@@ -2453,18 +2564,28 @@ async function closeCharacterChatModal() {
         })
       });
     } catch (e) {
-      console.error('Failed to cancel session:', e);
+      console.error('Failed to cancel character session:', e);
     }
     currentChatSessionId = null;
   }
 
-  document.getElementById('character-chat-modal').style.display = 'none';
-}
+  if (currentChatType === 'plot' && currentPlotChatSessionId) {
+    try {
+      await fetch('/api/claude/plot_chat_cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: currentPlotChatSessionId
+        })
+      });
+    } catch (e) {
+      console.error('Failed to cancel plot session:', e);
+    }
+    currentPlotChatSessionId = null;
+  }
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+  currentChatType = null;
+  document.getElementById('character-chat-modal').style.display = 'none';
 }
 
 // Enterキーで送信
@@ -2474,7 +2595,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chatInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        sendCharacterChatMessage();
+        sendChatMessage();
       }
     });
   }
