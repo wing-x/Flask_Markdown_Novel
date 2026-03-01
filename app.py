@@ -1213,6 +1213,65 @@ def plot_draft_to_characters():
         # デバッグ用にエラーメッセージを返す
         return jsonify({'characters': [], 'debug': generated, 'error': str(e)})
 
+@app.route('/api/character/list', methods=['POST'])
+def list_characters_from_file():
+    """character.md からキャラクター名のリストを抽出する"""
+    data = request.json
+    project = data.get('project', '')
+
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    project_dir = os.path.join(BASE_DIR, project)
+    character_path = os.path.join(project_dir, 'character.md')
+
+    if not os.path.exists(character_path):
+        return jsonify({'characters': []})
+
+    with open(character_path, 'r', encoding='utf-8') as f:
+        character_content = f.read().strip()
+
+    if not character_content:
+        return jsonify({'characters': []})
+
+    # Claude APIを使ってキャラクター名を抽出
+    prompt = f"""以下のキャラクター設定ファイルから、登場するすべてのキャラクター名を抽出してください。
+
+{character_content}
+
+キャラクター名のみをJSON配列形式で出力してください。
+例: ["太郎", "花子", "次郎"]
+
+- キャラクター名のみを抽出し、説明文は含めないでください
+- 見出し（##など）の後に記載されているキャラクター名を抽出してください
+- JSON配列のみを出力し、他の説明文は一切不要です"""
+
+    message = client.messages.create(
+        model='claude-sonnet-4-6',
+        max_tokens=1000,
+        messages=[{'role': 'user', 'content': prompt}],
+        timeout=60.0
+    )
+
+    generated = message.content[0].text.strip()
+
+    # JSON形式のレスポンスをパース
+    try:
+        import json
+        import re
+
+        # ```json などのマークダウンコードブロックを除去
+        json_match = re.search(r'\[.*\]', generated, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
+            characters = json.loads(json_str)
+            return jsonify({'characters': characters})
+        else:
+            characters = json.loads(generated)
+            return jsonify({'characters': characters})
+    except Exception as e:
+        return jsonify({'characters': [], 'debug': generated, 'error': str(e)})
+
 @app.route('/api/claude/generate_character_from_draft', methods=['POST'])
 def generate_character_from_draft():
     """plot_draft.md の情報を元に特定のキャラクターの詳細設定を生成する"""
@@ -1335,13 +1394,17 @@ def character_chat_start():
     series = data.get('series', '') or None
     character_name = data.get('character_name', '')
     character_role = data.get('character_role', '')  # 新規作成モード用
-    mode = data.get('mode', 'from_draft')  # from_draft または new
+    mode = data.get('mode', 'from_draft')  # from_draft, new, edit_existing
 
     if not project:
         return jsonify({'error': 'プロジェクトが指定されていません'}), 400
 
     # 新規作成モードでキャラクター名が指定されていない場合は後で生成
     if mode == 'from_draft' and not character_name:
+        return jsonify({'error': 'キャラクター名が指定されていません'}), 400
+
+    # 既存キャラクター修正モードではキャラクター名が必須
+    if mode == 'edit_existing' and not character_name:
         return jsonify({'error': 'キャラクター名が指定されていません'}), 400
 
     project_dir = os.path.join(BASE_DIR, project)
@@ -1399,6 +1462,24 @@ def character_chat_start():
 5. 常に以下のフォーマットでキャラクター情報を出力してください："""
 
         initial_user_message = f'{character_role}のキャラクター設定を提案してください。キャラクター名も含めて提案してください。'
+
+    elif mode == 'edit_existing':
+        # 既存キャラクター修正モード
+        system_prompt = f"""あなたは小説のキャラクター設定を修正・改善するアシスタントです。
+ユーザーと対話しながら、「{character_name}」というキャラクターの設定を修正します。
+
+{series_ctx_text}
+
+## 既存キャラクター情報
+{existing_characters}
+
+## 役割
+1. 上記の既存キャラクター情報から「{character_name}」の現在の設定を抽出して提示してください
+2. ユーザーからの修正要望（例：「年齢を変更」「性格をもっと明るく」など）に応じて設定を調整してください
+3. 他のキャラクターとの整合性を保ちながら修正してください
+4. 常に以下のフォーマットでキャラクター情報を出力してください："""
+
+        initial_user_message = f'「{character_name}」の現在の設定を提示してください。'
 
     else:
         # plot_draftから生成モード

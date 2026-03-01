@@ -218,6 +218,7 @@
           <select id="character-mode-select" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ccc; margin-bottom: 10px;" onchange="toggleCharacterMode()">
             <option value="new">新規作成</option>
             <option value="from_draft">plot_draftから生成</option>
+            <option value="edit_existing">既存キャラクター修正</option>
           </select>
 
           <!-- 新規作成モード -->
@@ -234,6 +235,15 @@
             <button id="load-draft-characters-btn" onclick="loadDraftCharacters()" style="width: 100%; padding: 8px; margin-bottom: 10px; background: #f0f4ff; border: 1px solid #c8d8f8; border-radius: 4px; cursor: pointer;">キャラクターリストを読み込む</button>
             <label style="font-weight: bold; display: block; margin-bottom: 5px;">キャラクター選択:</label>
             <select id="draft-character-select" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
+              <option value="">-- キャラクターを選択 --</option>
+            </select>
+          </div>
+
+          <!-- 既存キャラクター修正モード -->
+          <div id="character-edit-mode" style="display:none;">
+            <button id="load-existing-characters-btn" onclick="loadExistingCharacters()" style="width: 100%; padding: 8px; margin-bottom: 10px; background: #fff4e6; border: 1px solid #ffc107; border-radius: 4px; cursor: pointer;">既存キャラクターを読み込む</button>
+            <label style="font-weight: bold; display: block; margin-bottom: 5px;">修正するキャラクター:</label>
+            <select id="existing-character-select" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
               <option value="">-- キャラクターを選択 --</option>
             </select>
           </div>

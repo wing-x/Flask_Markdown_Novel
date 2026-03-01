@@ -791,13 +791,18 @@ function toggleCharacterMode() {
   const mode = document.getElementById('character-mode-select').value;
   const newMode = document.getElementById('character-new-mode');
   const draftMode = document.getElementById('character-draft-mode');
+  const editMode = document.getElementById('character-edit-mode');
+
+  newMode.style.display = 'none';
+  draftMode.style.display = 'none';
+  editMode.style.display = 'none';
 
   if (mode === 'new') {
     newMode.style.display = 'block';
-    draftMode.style.display = 'none';
-  } else {
-    newMode.style.display = 'none';
+  } else if (mode === 'from_draft') {
     draftMode.style.display = 'block';
+  } else if (mode === 'edit_existing') {
+    editMode.style.display = 'block';
   }
 }
 
@@ -848,6 +853,53 @@ async function loadDraftCharacters() {
   }
 }
 
+async function loadExistingCharacters() {
+  if (!currentProject) {
+    showToast('先にプロジェクトを選択してください', '#a06020');
+    return;
+  }
+
+  const btn = document.getElementById('load-existing-characters-btn');
+  btn.disabled = true;
+  btn.textContent = '読み込み中...';
+
+  try {
+    const res = await fetch('/api/character/list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: currentProject })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      return;
+    }
+
+    const select = document.getElementById('existing-character-select');
+    select.innerHTML = '<option value="">-- キャラクターを選択 --</option>';
+
+    if (data.characters && data.characters.length > 0) {
+      data.characters.forEach(char => {
+        const option = document.createElement('option');
+        option.value = char;
+        option.textContent = char;
+        select.appendChild(option);
+      });
+      showToast(`${data.characters.length}人のキャラクターを読み込みました`, '#1a7a40');
+    } else {
+      showToast('character.mdにキャラクターが見つかりませんでした', '#a06020');
+    }
+
+  } catch (e) {
+    showToast('通信エラーが発生しました', '#c0392b');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '既存キャラクターを読み込む';
+  }
+}
+
 async function runClaudeAction() {
   if (!selectedAction || !currentProject) return;
 
@@ -890,7 +942,7 @@ async function runClaudeAction() {
       }
 
       requestBody.character_role = characterRole;
-    } else {
+    } else if (mode === 'from_draft') {
       // plot_draftから生成モード
       const characterName = document.getElementById('draft-character-select').value;
       if (!characterName) {
@@ -934,6 +986,29 @@ async function runClaudeAction() {
         showToast('Claude APIエラーが発生しました', '#a03020');
       }
       return;
+    } else if (mode === 'edit_existing') {
+      // 既存キャラクター修正モード
+      const characterName = document.getElementById('existing-character-select').value;
+      if (!characterName) {
+        showToast('修正するキャラクターを選択してください', '#a03020');
+        btn.disabled = false;
+        btn.textContent = '実行';
+        return;
+      }
+
+      // チャットモードの場合のみサポート
+      if (useChatMode) {
+        console.log('Starting edit character chat for:', characterName);
+        await startCharacterChat(characterName, mode);
+        btn.disabled = false;
+        btn.textContent = '実行';
+        return;
+      } else {
+        showToast('既存キャラクター修正はチャットモードでのみ利用可能です', '#a06020');
+        btn.disabled = false;
+        btn.textContent = '実行';
+        return;
+      }
     }
   }
 
