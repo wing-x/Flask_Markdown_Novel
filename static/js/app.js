@@ -32,8 +32,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
   loadProjects();
   loadSeriesList();
+  loadWritingStyles();
 
-  // 初期状態：ファイルセクションは非表示（プロジェクト or 巻選択後に表示）
+  // 初期状態:ファイルセクションは非表示（プロジェクト or 巻選択後に表示）
   document.getElementById('file-section').style.display = 'none';
 
   // コンテキストメニューを閉じる
@@ -71,6 +72,27 @@ function showToast(msg, color = '#1a5aa0') {
   toast.style.background = color;
   toast.classList.add('show');
   setTimeout(() => toast.classList.remove('show'), 2500);
+}
+
+// ---- 文体一覧読み込み ----
+async function loadWritingStyles() {
+  try {
+    const res = await fetch('/api/writing_styles');
+    const styles = await res.json();
+    const sel = document.getElementById('writing-style-select');
+    if (!sel) return;
+
+    sel.innerHTML = '';
+    styles.forEach(style => {
+      const opt = document.createElement('option');
+      opt.value = style.id;
+      opt.textContent = style.name;
+      opt.title = style.description;
+      sel.appendChild(opt);
+    });
+  } catch (e) {
+    console.error('文体一覧の読み込みに失敗しました:', e);
+  }
 }
 
 // ---- プロジェクト ----
@@ -541,6 +563,9 @@ async function generateChapters() {
   const progressWrap = document.getElementById('chapter-progress');
   const progressBar = document.getElementById('chapter-progress-bar');
   const progressLabel = document.getElementById('chapter-progress-label');
+  const writingStyleSelect = document.getElementById('writing-style-select');
+
+  const selectedStyle = writingStyleSelect ? writingStyleSelect.value : 'standard';
 
   btn.disabled = true;
   btn.textContent = '⏳ 生成中…';
@@ -552,7 +577,11 @@ async function generateChapters() {
     const res = await fetch('/api/claude/generate_chapters', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project: currentProject, series: currentSeries })
+      body: JSON.stringify({
+        project: currentProject,
+        series: currentSeries,
+        writing_style: selectedStyle
+      })
     });
 
     progressBar.style.width = '90%';
@@ -715,6 +744,8 @@ async function generatePlotFromDraft() {
   btn.disabled = true;
   btn.textContent = '⏳ 生成中…';
 
+  let accumulated = '';
+
   try {
     const res = await fetch('/api/claude/draft_to_plot', {
       method: 'POST',
@@ -722,20 +753,52 @@ async function generatePlotFromDraft() {
       body: JSON.stringify({ project: currentProject, series: currentSeries })
     });
 
-    const data = await res.json();
-
     if (!res.ok) {
+      const data = await res.json();
       showToast(data.error || 'エラーが発生しました', '#c0392b');
       return;
     }
 
-    // ファイルリストを更新して plot.md を開く
-    await loadFiles();
-    await openFile('plot.md');
-    showToast('plot.md を生成・保存しました ✅', '#1a7a40');
+    // SSE ストリーミング受信
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+
+      buffer += decoder.decode(result.value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const payload = JSON.parse(line.slice(6));
+
+          if (payload.error) {
+            showToast('エラー: ' + payload.error, '#c0392b');
+            return;
+          }
+
+          if (payload.chunk) {
+            accumulated += payload.chunk;
+            btn.textContent = '⏳ 生成中… ' + accumulated.length + '字';
+          }
+
+          if (payload.done) {
+            // ファイルリストを更新して plot.md を開く
+            await loadFiles();
+            await openFile('plot.md');
+            showToast('plot.md を生成・保存しました ✅', '#1a7a40');
+          }
+        } catch (parseErr) { /* ignore */ }
+      }
+    }
 
   } catch (e) {
-    showToast('通信エラーが発生しました', '#c0392b');
+    showToast('通信エラーが発生しました: ' + e.message, '#c0392b');
   } finally {
     btn.disabled = false;
     btn.textContent = '✍️ draft → plot.md';
@@ -1024,24 +1087,165 @@ async function runClaudeAction() {
     }
   }
 
-  const res = await fetch('/api/claude/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody)
-  });
+  const resultEl = document.getElementById('claude-result');
+  resultEl.style.display = 'block';
+  resultEl.textContent = '生成中...';
+  document.getElementById('insert-result-btn').style.display = 'none';
+  document.getElementById('continue-result-btn').style.display = 'none';
 
-  btn.disabled = false;
-  btn.textContent = '実行';
+  let accumulated = '';
+  let currentSessionId = null;
 
-  if (res.ok) {
-    const data = await res.json();
-    claudeResult = data.result;
-    const resultEl = document.getElementById('claude-result');
-    resultEl.style.display = 'block';
-    resultEl.textContent = claudeResult;
-    document.getElementById('insert-result-btn').style.display = 'inline-block';
-  } else {
-    showToast('Claude APIエラーが発生しました', '#a03020');
+  try {
+    const res = await fetch('/api/claude/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!res.ok) {
+      const data = await res.json();
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      btn.disabled = false;
+      btn.textContent = '実行';
+      return;
+    }
+
+    // SSE ストリーミング受信
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+
+      buffer += decoder.decode(result.value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const payload = JSON.parse(line.slice(6));
+
+          if (payload.error) {
+            showToast('エラー: ' + payload.error, '#c0392b');
+            btn.disabled = false;
+            btn.textContent = '実行';
+            return;
+          }
+
+          if (payload.chunk) {
+            accumulated += payload.chunk;
+            resultEl.textContent = accumulated;
+            btn.textContent = '生成中… ' + accumulated.length + '字';
+          }
+
+          if (payload.done) {
+            claudeResult = accumulated;
+            currentSessionId = payload.session_id;
+            document.getElementById('insert-result-btn').style.display = 'inline-block';
+
+            // トランケーションされた場合は「続きを生成」ボタンを表示
+            if (payload.is_truncated) {
+              const continueBtn = document.getElementById('continue-result-btn');
+              continueBtn.style.display = 'inline-block';
+              continueBtn.onclick = () => continueClaude(currentSessionId);
+            }
+
+            btn.disabled = false;
+            btn.textContent = '実行';
+          }
+        } catch (parseErr) { /* ignore */ }
+      }
+    }
+
+  } catch (e) {
+    showToast('通信エラーが発生しました: ' + e.message, '#c0392b');
+    btn.disabled = false;
+    btn.textContent = '実行';
+  }
+}
+
+async function continueClaude(sessionId) {
+  const btn = document.getElementById('continue-result-btn');
+  btn.disabled = true;
+  btn.textContent = '続きを生成中...';
+
+  const resultEl = document.getElementById('claude-result');
+  let accumulated = claudeResult; // 既存の結果を保持
+  let currentSessionId = sessionId;
+
+  try {
+    const res = await fetch('/api/claude/continue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId })
+    });
+
+    if (!res.ok) {
+      const data = await res.json();
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      btn.disabled = false;
+      btn.textContent = '続きを生成';
+      return;
+    }
+
+    // SSE ストリーミング受信
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+
+      buffer += decoder.decode(result.value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const payload = JSON.parse(line.slice(6));
+
+          if (payload.error) {
+            showToast('エラー: ' + payload.error, '#c0392b');
+            btn.disabled = false;
+            btn.textContent = '続きを生成';
+            return;
+          }
+
+          if (payload.chunk) {
+            accumulated += payload.chunk;
+            claudeResult = accumulated;
+            resultEl.textContent = accumulated;
+            btn.textContent = '生成中… ' + accumulated.length + '字';
+          }
+
+          if (payload.done) {
+            currentSessionId = payload.session_id;
+
+            // まだトランケーションされている場合は続きボタンを維持
+            if (payload.is_truncated) {
+              btn.onclick = () => continueClaude(currentSessionId);
+              btn.disabled = false;
+              btn.textContent = '続きを生成';
+              showToast('出力が途中で切れました。「続きを生成」で続けられます', '#f39c12');
+            } else {
+              btn.style.display = 'none';
+              showToast('生成完了！', '#1a7a40');
+            }
+          }
+        } catch (parseErr) { /* ignore */ }
+      }
+    }
+
+  } catch (e) {
+    showToast('通信エラーが発生しました: ' + e.message, '#c0392b');
+    btn.disabled = false;
+    btn.textContent = '続きを生成';
   }
 }
 
@@ -2379,6 +2583,24 @@ async function startPlotChat(length) {
   console.log('currentProject:', currentProject);
   console.log('currentSeries:', currentSeries);
 
+  // モーダルを開く
+  document.getElementById('chat-character-name').textContent = `プロット展開案 (${length})`;
+  const messagesArea = document.getElementById('character-chat-messages');
+  messagesArea.innerHTML = '';
+
+  // モーダルを表示
+  const modal = document.getElementById('character-chat-modal');
+  modal.style.display = 'block';
+  document.getElementById('character-chat-input').value = '';
+
+  // ローディングメッセージを追加
+  const loadingDiv = document.createElement('div');
+  loadingDiv.className = 'chat-message assistant';
+  loadingDiv.innerHTML = '<div class="chat-bubble"><em>プロット展開案を生成中...</em></div>';
+  messagesArea.appendChild(loadingDiv);
+
+  let accumulated = '';
+
   try {
     const res = await fetch('/api/claude/plot_chat_start', {
       method: 'POST',
@@ -2396,36 +2618,68 @@ async function startPlotChat(length) {
       const data = await res.json();
       console.error('Error response:', data);
       showToast(data.error || 'エラーが発生しました', '#c0392b');
+      messagesArea.removeChild(loadingDiv);
       return;
     }
 
-    const data = await res.json();
-    console.log('Success response:', data);
-    console.log('Setting currentPlotChatSessionId to:', data.session_id);
-    currentPlotChatSessionId = data.session_id;
-    currentChatType = 'plot';
-    console.log('currentPlotChatSessionId is now:', currentPlotChatSessionId);
+    // ローディングメッセージを削除
+    messagesArea.removeChild(loadingDiv);
 
-    // モーダルを開く
-    document.getElementById('chat-character-name').textContent = `プロット展開案 (${length})`;
-    const messagesArea = document.getElementById('character-chat-messages');
-    messagesArea.innerHTML = '';
+    // アシスタントメッセージの枠を作成
+    const assistantDiv = document.createElement('div');
+    assistantDiv.className = 'chat-message assistant';
+    const bubbleDiv = document.createElement('div');
+    bubbleDiv.className = 'chat-bubble';
+    assistantDiv.appendChild(bubbleDiv);
+    messagesArea.appendChild(assistantDiv);
 
-    // 初回のアシスタントメッセージを追加
-    addChatMessage('assistant', data.response);
+    // SSE ストリーミング受信
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
 
-    // モーダルを表示
-    const modal = document.getElementById('character-chat-modal');
-    console.log('Opening modal:', modal);
-    modal.style.display = 'block';
-    document.getElementById('character-chat-input').value = '';
-    document.getElementById('character-chat-input').focus();
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
 
-    showToast('チャットセッションを開始しました', '#1a7a40');
+      buffer += decoder.decode(result.value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const payload = JSON.parse(line.slice(6));
+
+          if (payload.error) {
+            showToast('エラー: ' + payload.error, '#c0392b');
+            return;
+          }
+
+          if (payload.chunk) {
+            accumulated += payload.chunk;
+            // リアルタイムでMarkdownレンダリング
+            bubbleDiv.innerHTML = marked.parse(accumulated);
+            messagesArea.scrollTop = messagesArea.scrollHeight;
+          }
+
+          if (payload.done) {
+            currentPlotChatSessionId = payload.session_id;
+            currentChatType = 'plot';
+            console.log('Session started. ID:', currentPlotChatSessionId);
+            document.getElementById('character-chat-input').focus();
+            showToast('チャットセッションを開始しました', '#1a7a40');
+          }
+        } catch (parseErr) { /* ignore */ }
+      }
+    }
 
   } catch (e) {
     showToast('通信エラーが発生しました: ' + e.message, '#c0392b');
     console.error('Exception in startPlotChat:', e);
+    if (messagesArea.contains(loadingDiv)) {
+      messagesArea.removeChild(loadingDiv);
+    }
   }
 }
 

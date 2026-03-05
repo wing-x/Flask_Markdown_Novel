@@ -1,10 +1,11 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, session
 import anthropic
 import os
 import json
 import shutil
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key-here-change-in-production')
 
 # プロジェクトのベースディレクトリ
 BASE_DIR = os.path.join(os.path.dirname(__file__), 'projects')
@@ -16,23 +17,493 @@ client = anthropic.Anthropic()
 SERIES_PREFIX = '_series_'
 
 # チャットセッション管理
-character_chat_sessions = {}
-plot_chat_sessions = {}
+chat_sessions = {}
+
+# 文体定義
+WRITING_STYLES = {
+    'standard': {
+        'name': '標準（読みやすい文章）',
+        'description': '現代的で読みやすい文体。ライトノベル・一般文芸向け',
+        'instruction': '読みやすく親しみやすい現代的な文体で執筆してください。会話文は自然で、地の文は簡潔かつ分かりやすく。'
+    },
+    'literary': {
+        'name': '文学的（格調高い文章）',
+        'description': '格調高く重厚な文体。純文学・歴史小説向け',
+        'instruction': '格調高く重厚な文体で執筆してください。比喩や情景描写を丁寧に織り込み、深い心理描写を重視してください。'
+    },
+    'light': {
+        'name': 'ライト（軽快な文章）',
+        'description': '軽快でテンポの良い文体。エンタメ・コメディ向け',
+        'instruction': '軽快でテンポの良い文体で執筆してください。短い文章を中心に、リズム感とスピード感を重視してください。'
+    },
+    'dramatic': {
+        'name': 'ドラマチック（劇的な文章）',
+        'description': '感情表現が豊かで劇的な文体。ファンタジー・アクション向け',
+        'instruction': 'ドラマチックで感情表現豊かな文体で執筆してください。緊迫感・高揚感を演出し、印象的な表現を積極的に使用してください。'
+    },
+    'formal': {
+        'name': '硬派（固めの文章）',
+        'description': '硬質で冷静な文体。ミステリー・SF・ビジネス小説向け',
+        'instruction': '硬質で冷静な文体で執筆してください。論理的・客観的な描写を心がけ、感情表現は抑制的に。専門用語や緻密な描写を重視してください。'
+    },
+    'poetic': {
+        'name': '詩的（美しい文章）',
+        'description': '叙情的で美しい文体。恋愛小説・ファンタジー向け',
+        'instruction': '叙情的で美しい文体で執筆してください。詩的な表現や繊細な感情描写、美しい比喩を織り交ぜてください。'
+    }
+}
+
+# --- チャット共通ロジック ---
+
+def _chat_continue(session_id, user_message):
+    """チャットセッションを継続する内部関数"""
+    if not session_id or session_id not in chat_sessions:
+        return error_response('無効なセッションIDです')
+    if not user_message:
+        return error_response('メッセージが空です')
+
+    session = chat_sessions[session_id]
+    session['messages'].append({'role': 'user', 'content': user_message})
+
+    try:
+        # モデル名はセッションから取得、デフォルトは claude-opus-4-6
+        model = session.get('model', 'claude-opus-4-6')
+        message = client.messages.create(
+            model=model,
+            max_tokens=30000,
+            system=session['system_prompt'],
+            messages=session['messages'],
+            timeout=120.0
+        )
+        response_text = message.content[0].text
+        session['messages'].append({'role': 'assistant', 'content': response_text})
+        return jsonify({'result': response_text})
+    except Exception as e:
+        return error_response(f'Claude APIエラー: {str(e)}', 500)
+
+def _chat_finalize(session_id, result_key='result'):
+    """チャットセッションを終了して最終結果を返す内部関数"""
+    if not session_id or session_id not in chat_sessions:
+        return error_response('無効なセッションIDです')
+
+    session = chat_sessions[session_id]
+    final_info = None
+    for msg in reversed(session['messages']):
+        if msg['role'] == 'assistant':
+            final_info = msg['content']
+            break
+
+    if not final_info:
+        return error_response('生成された情報が見つかりません')
+
+    del chat_sessions[session_id]
+    return jsonify({
+        result_key: final_info,
+        'message': '情報を確定しました'
+    })
+
+def _chat_cancel(session_id):
+    """チャットセッションをキャンセルする内部関数"""
+    if not session_id or session_id not in chat_sessions:
+        return error_response('無効なセッションIDです')
+    del chat_sessions[session_id]
+    return jsonify({'message': 'チャットセッションをキャンセルしました'})
+
+# --- ユーティリティ関数 ---
+
+def get_project_path(project, *paths):
+    """プロジェクト内の絶対パスを生成する"""
+    return os.path.join(BASE_DIR, project, *paths)
+
+def read_text_file(path, default=''):
+    """テキストファイルをUTF-8で読み込む"""
+    if not os.path.exists(path):
+        return default
+    with open(path, 'r', encoding='utf-8') as f:
+        return f.read().strip()
+
+def write_text_file(path, content):
+    """テキストファイルをUTF-8で書き込む"""
+    file_dir = os.path.dirname(path)
+    if file_dir and not os.path.exists(file_dir):
+        os.makedirs(file_dir, exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+def summarize_existing_characters(character_md_content):
+    """
+    既存のcharacter.mdから全キャラクターの全7項目を漏れなく要約する
+
+    要約項目:
+    - 基本情報（名前、役割、年齢、性別、職業など）
+    - 外見
+    - 性格
+    - 背景（生い立ち、家族構成、重要な過去）
+    - 目標・動機
+    - 人間関係
+    - その他
+
+    Returns:
+        tuple: (要約テキスト, 人間関係＋家族構成テキスト)
+    """
+    import re
+
+    if not character_md_content:
+        return '', ''
+
+    # キャラクターごとに分割
+    # "# キャラクター設定　キャラ名" の形式を想定
+    # 正規表現で "# キャラクター設定" で始まる見出しで分割
+    character_sections = re.split(r'\n(?=#\s+キャラクター設定)', '\n' + character_md_content)
+
+    summaries = []
+    all_relationships_and_family = []
+
+    for section in character_sections:
+        if not section.strip():
+            continue
+
+        # セクションの最初の行からキャラクター名を取得
+        lines = section.strip().split('\n')
+        if not lines:
+            continue
+
+        first_line = lines[0].strip()
+
+        # "# キャラクター設定　キャラ名" からキャラ名を抽出
+        char_name_match = re.match(r'#\s+キャラクター設定[\s　]+(.+)', first_line)
+        if not char_name_match:
+            continue
+
+        char_name = char_name_match.group(1).strip()
+        section_content = '\n'.join(lines[1:])
+
+        # === 1. 基本情報の抽出 ===
+        basic_info = {}
+        basic_section_match = re.search(r'###?\s*基本情報\s*\n(.*?)(?=\n###?[^#]|\Z)', section_content, re.DOTALL)
+        if basic_section_match:
+            basic_text = basic_section_match.group(1).strip()
+            for line in basic_text.split('\n'):
+                line = line.strip()
+                if line.startswith('- 名前:') or line.startswith('- **名前'):
+                    basic_info['名前'] = re.sub(r'^-\s*\*?\*?名前\*?\*?:\s*', '', line).strip()
+                    char_name = basic_info['名前']  # 名前が見つかったら更新
+                elif line.startswith('- 役割:') or line.startswith('- **役割'):
+                    basic_info['役割'] = re.sub(r'^-\s*\*?\*?役割\*?\*?:\s*', '', line).strip()
+                elif line.startswith('- 年齢:') or line.startswith('- **年齢'):
+                    basic_info['年齢'] = re.sub(r'^-\s*\*?\*?年齢\*?\*?:\s*', '', line).strip()
+                elif line.startswith('- 性別:') or line.startswith('- **性別'):
+                    basic_info['性別'] = re.sub(r'^-\s*\*?\*?性別\*?\*?:\s*', '', line).strip()
+                elif line.startswith('- 職業:') or line.startswith('- **職業'):
+                    basic_info['職業'] = re.sub(r'^-\s*\*?\*?職業\*?\*?:\s*', '', line).strip()
+
+        # === 2. 外見の抽出（要約） ===
+        appearance_summary = ''
+        appearance_match = re.search(r'###?\s*外見\s*\n(.*?)(?=\n###?[^#]|\Z)', section_content, re.DOTALL)
+        if appearance_match:
+            appearance_text = appearance_match.group(1).strip()
+            # 主要な外見情報のみ抽出（身長、髪、目、特徴）
+            appearance_parts = []
+            for line in appearance_text.split('\n'):
+                line = line.strip()
+                if line.startswith('- 身長:') or line.startswith('- **身長'):
+                    appearance_parts.append(re.sub(r'^-\s*\*?\*?身長\*?\*?:\s*', '', line))
+                elif line.startswith('- 髪型・髪色:') or line.startswith('- **髪型'):
+                    appearance_parts.append(re.sub(r'^-\s*\*?\*?髪型・髪色\*?\*?:\s*', '', line))
+                elif line.startswith('- 目の色:') or line.startswith('- **目の色'):
+                    appearance_parts.append(re.sub(r'^-\s*\*?\*?目の色\*?\*?:\s*', '', line))
+                elif line.startswith('- 特徴的な外見:') or line.startswith('- **特徴'):
+                    appearance_parts.append(re.sub(r'^-\s*\*?\*?特徴的な外見\*?\*?:\s*', '', line))
+            if appearance_parts:
+                appearance_summary = '、'.join(appearance_parts)
+
+        # === 3. 性格の抽出（要約） ===
+        personality_summary = ''
+        personality_match = re.search(r'###?\s*性格\s*\n(.*?)(?=\n###?[^#]|\Z)', section_content, re.DOTALL)
+        if personality_match:
+            personality_text = personality_match.group(1).strip()
+            # 基本的な性格、長所、短所を抽出
+            personality_parts = []
+            for line in personality_text.split('\n'):
+                line = line.strip()
+                if line.startswith('- 基本的な性格:') or line.startswith('- **基本的な性格'):
+                    personality_parts.append(re.sub(r'^-\s*\*?\*?基本的な性格\*?\*?:\s*', '', line))
+                elif line.startswith('- 長所:') or line.startswith('- **長所'):
+                    personality_parts.append('長所: ' + re.sub(r'^-\s*\*?\*?長所\*?\*?:\s*', '', line))
+                elif line.startswith('- 短所:') or line.startswith('- **短所'):
+                    personality_parts.append('短所: ' + re.sub(r'^-\s*\*?\*?短所\*?\*?:\s*', '', line))
+            if personality_parts:
+                personality_summary = '、'.join(personality_parts)
+
+        # === 4. 背景の抽出（要約） ===
+        background_summary = ''
+        family_info = ''
+        background_match = re.search(r'###?\s*背景\s*\n(.*?)(?=\n###?[^#]|\Z)', section_content, re.DOTALL)
+        if background_match:
+            background_text = background_match.group(1).strip()
+            background_parts = []
+            for line in background_text.split('\n'):
+                line = line.strip()
+                if line.startswith('- 生い立ち:') or line.startswith('- **生い立ち'):
+                    background_parts.append(re.sub(r'^-\s*\*?\*?生い立ち\*?\*?:\s*', '', line))
+                elif line.startswith('- 家族構成:') or line.startswith('- **家族構成'):
+                    family_info = re.sub(r'^-\s*\*?\*?家族構成\*?\*?:\s*', '', line)
+                    background_parts.append('家族: ' + family_info)
+                elif line.startswith('- 重要な過去') or line.startswith('- **重要な過去'):
+                    background_parts.append(re.sub(r'^-\s*\*?\*?重要な過去の出来事\*?\*?:\s*', '', line))
+            if background_parts:
+                background_summary = '、'.join(background_parts)
+
+        # === 5. 目標・動機の抽出（要約） ===
+        goal_summary = ''
+        goal_match = re.search(r'###?\s*目標・動機\s*\n(.*?)(?=\n###?[^#]|\Z)', section_content, re.DOTALL)
+        if goal_match:
+            goal_text = goal_match.group(1).strip()
+            goal_parts = []
+            for line in goal_text.split('\n'):
+                line = line.strip()
+                if line.startswith('- 物語における目標:') or line.startswith('- **物語'):
+                    goal_parts.append(re.sub(r'^-\s*\*?\*?物語における目標\*?\*?:\s*', '', line))
+                elif line.startswith('- その目標を持つ理由:') or line.startswith('- **その目標'):
+                    goal_parts.append('理由: ' + re.sub(r'^-\s*\*?\*?その目標を持つ理由\*?\*?:\s*', '', line))
+            if goal_parts:
+                goal_summary = '、'.join(goal_parts)
+
+        # === 6. 人間関係の抽出（完全版・最重要） ===
+        relationships = ''
+        relationship_match = re.search(r'###?\s*人間関係\s*\n(.*?)(?=\n###?[^#]|\Z)', section_content, re.DOTALL)
+        if relationship_match:
+            relationships = relationship_match.group(1).strip()
+
+        # === 7. その他の抽出 ===
+        other_info = ''
+        other_match = re.search(r'###?\s*その他\s*\n(.*?)(?=\n###?[^#]|\Z)', section_content, re.DOTALL)
+        if other_match:
+            other_text = other_match.group(1).strip()
+            # 最初の数行のみ要約として使用
+            other_lines = [l for l in other_text.split('\n') if l.strip()]
+            if other_lines:
+                other_info = other_lines[0][:100]  # 最大100文字
+
+        # === 人間関係と家族構成を統合（最重要情報） ===
+        combined_info_parts = []
+        if relationships or family_info:
+            combined_info_parts.append(f"【{char_name}の重要情報】")
+
+            if family_info:
+                combined_info_parts.append(f"■家族構成: {family_info}")
+
+            if relationships:
+                combined_info_parts.append(f"■人間関係:\n{relationships}")
+
+            all_relationships_and_family.append('\n'.join(combined_info_parts))
+
+        # === 要約を作成（全7項目） ===
+        summary_lines = [f"◆ {char_name}"]
+
+        # 基本情報
+        if basic_info.get('役割'):
+            summary_lines.append(f"  役割: {basic_info['役割']}")
+        if basic_info.get('年齢'):
+            summary_lines.append(f"  年齢: {basic_info['年齢']}")
+        if basic_info.get('性別'):
+            summary_lines.append(f"  性別: {basic_info['性別']}")
+        if basic_info.get('職業'):
+            summary_lines.append(f"  職業: {basic_info['職業']}")
+
+        # 外見
+        if appearance_summary:
+            summary_lines.append(f"  外見: {appearance_summary}")
+
+        # 性格
+        if personality_summary:
+            summary_lines.append(f"  性格: {personality_summary}")
+
+        # 背景
+        if background_summary:
+            summary_lines.append(f"  背景: {background_summary}")
+
+        # 目標・動機
+        if goal_summary:
+            summary_lines.append(f"  目標: {goal_summary}")
+
+        # その他
+        if other_info:
+            summary_lines.append(f"  その他: {other_info}")
+
+        summaries.append('\n'.join(summary_lines))
+
+    summary_text = '\n\n'.join(summaries) if summaries else ''
+    relationship_and_family_text = '\n\n'.join(all_relationships_and_family) if all_relationships_and_family else ''
+
+    return summary_text, relationship_and_family_text
+
+def read_json_file(path, default=None):
+    """JSONファイルを読み込む"""
+    if not os.path.exists(path):
+        return default
+    with open(path, 'r', encoding='utf-8') as f:
+        try:
+            return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            return default
+
+def write_json_file(path, data):
+    """JSONファイルを書き込む"""
+    file_dir = os.path.dirname(path)
+    if file_dir and not os.path.exists(file_dir):
+        os.makedirs(file_dir, exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def error_response(message, status_code=400):
+    """標準エラーレスポンスを生成する"""
+    return jsonify({'error': message}), status_code
 
 def get_series_dir(series_name):
     return os.path.join(BASE_DIR, SERIES_PREFIX + series_name)
 
 def get_series_meta(series_name):
     meta_path = os.path.join(get_series_dir(series_name), '_meta.json')
-    if os.path.exists(meta_path):
-        with open(meta_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {'volumes': []}
+    return read_json_file(meta_path, default={'volumes': []})
 
 def save_series_meta(series_name, meta):
     meta_path = os.path.join(get_series_dir(series_name), '_meta.json')
-    with open(meta_path, 'w', encoding='utf-8') as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+    write_json_file(meta_path, meta)
+
+# プロンプト定数
+PROMPTS = {
+    'plot_format': """
+## 出力形式
+
+以下の形式に厳密に従って、詳細なプロット展開案を作成してください：
+
+# プロット展開案
+## 『タイトル（仮題）』
+
+---
+
+## 全体構造の概観
+
+**{length_guideline}**
+
+| ブロック | 章 | 機能 | 文字数目安 |
+|---|---|---|---|
+| 第一部「[部タイトル]」 | 第1〜[章数]章 | [機能説明] | 約[文字数] |
+| 第二部「[部タイトル]」 | 第[章数]〜[章数]章 | [機能説明] | 約[文字数] |
+（目標執筆量に応じて部数を調整）
+
+---
+
+## 物語の核心について
+
+展開の中心となる主題やテーマ、物語が提示する主要な問いについて説明してください。
+複数の展開案がある場合は、それぞれの強みとテーマへの寄与度を記載してください。
+
+---
+
+## 登場人物の追加設定（必要な場合）
+
+プロット上必要な未設定キャラクターがいる場合、ここに記載してください。
+
+---
+
+## 第一部「[部タイトル]」　第1〜[章数]章　約[文字数]
+
+### 第1章「[章タイトル]」　約[文字数]
+
+**主な展開：**
+この章で起こる出来事を具体的に記述してください。
+場面、登場人物の行動、会話の要点、感情の動きなどを含めてください。
+
+**ポイント：**
+- この章の物語上の役割
+- 伏線の配置
+- キャラクターの成長や変化
+
+---
+
+（以下、各章について同様の形式で記述）
+
+---
+
+## 伏線一覧と回収タイミング
+
+| 伏線 | 設置章 | 回収章 | 内容 |
+|---|---|---|---|
+| [伏線の内容] | 第[章数]章 | 第[章数]章 | [詳細] |
+
+---
+
+## 読者を引きつけるポイント
+
+**①[ポイント1のタイトル]**
+説明
+
+**②[ポイント2のタイトル]**
+説明
+
+（3〜5つ程度）
+
+---
+
+## 章ごとの文字数配分まとめ
+
+| 章 | タイトル（仮） | 目安文字数 |
+|---|---|---|
+| 第1章 | [タイトル] | [文字数] |
+| 第2章 | [タイトル] | [文字数] |
+（全章を記載）
+| **合計** | | **約[総文字数]** |
+
+---
+""",
+    'character_format': """
+常に以下のフォーマットでキャラクター情報を出力してください：
+
+# キャラクター設定
+
+## 基本情報
+- 名前:
+- 役割:
+- 年齢:
+- 性別:
+- 職業:
+
+## 外見
+- 身長:
+- 体格:
+- 髪型・髪色:
+- 目の色:
+- 特徴的な外見:
+
+## 性格
+- 基本的な性格:
+- 長所:
+- 短所:
+- 癖・口癖:
+
+## 背景
+- 生い立ち:
+- 家族構成:
+- 重要な過去の出来事:
+
+## 目標・動機
+- 物語における目標:
+- その目標を持つ理由:
+
+## 人間関係
+- (他キャラクターとの関係)
+
+## その他
+- (追加情報)
+
+## 指示事項
+- ユーザーの修正要望には柔軟に対応してください
+- 修正時は、変更した部分を明確にしてください
+- 物語の世界観との整合性を保ってください
+""",
+}
 
 # シリーズ聖典ファイルのデフォルトテンプレート
 SERIES_BIBLE_TEMPLATES = {
@@ -104,6 +575,18 @@ SERIES_BIBLE_TEMPLATES = {
 def index():
     return render_template('index.html')
 
+@app.route('/api/writing_styles', methods=['GET'])
+def get_writing_styles():
+    """文体一覧を取得"""
+    styles = []
+    for key, value in WRITING_STYLES.items():
+        styles.append({
+            'id': key,
+            'name': value['name'],
+            'description': value['description']
+        })
+    return jsonify(styles)
+
 @app.route('/api/projects', methods=['GET'])
 def list_projects():
     projects = []
@@ -118,29 +601,29 @@ def create_project():
     data = request.json
     name = data.get('name', '').strip()
     if not name:
-        return jsonify({'error': 'プロジェクト名が必要です'}), 400
+        return error_response('プロジェクト名が必要です')
     
-    project_dir = os.path.join(BASE_DIR, name)
+    project_dir = get_project_path(name)
     os.makedirs(project_dir, exist_ok=True)
     
     # デフォルトファイルを作成
     defaults = {
         'character.md': '# キャラクター設定\n\n## 主人公\n\n- 名前：\n- 役割：(メインキャラクター / サブキャラクター)\n- 年齢：\n- 外見：\n- 性格：\n- 背景：\n',
         'plot.md': '# プロット\n\n## あらすじ\n\n## 第一章\n\n## 第二章\n\n## 結末\n',
+        'plot_draft.md': '# プロット展開案\n\n',
     }
     for filename, content in defaults.items():
-        filepath = os.path.join(project_dir, filename)
+        filepath = get_project_path(name, filename)
         if not os.path.exists(filepath):
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(content)
+            write_text_file(filepath, content)
     
     return jsonify({'name': name})
 
 @app.route('/api/projects/<project>/files', methods=['GET'])
 def list_files(project):
-    project_dir = os.path.join(BASE_DIR, project)
+    project_dir = get_project_path(project)
     if not os.path.exists(project_dir):
-        return jsonify({'error': 'プロジェクトが見つかりません'}), 404
+        return error_response('プロジェクトが見つかりません', 404)
 
     def scan_directory(path, prefix=''):
         """ディレクトリを再帰的にスキャンして構造を返す"""
@@ -171,47 +654,35 @@ def list_files(project):
 
 @app.route('/api/projects/<project>/files/<path:filename>', methods=['GET'])
 def get_file(project, filename):
-    filepath = os.path.join(BASE_DIR, project, filename)
-    if not os.path.exists(filepath):
-        return jsonify({'error': 'ファイルが見つかりません'}), 404
+    filepath = get_project_path(project, filename)
+    content = read_text_file(filepath, None)
+    if content is None:
+        return error_response('ファイルが見つかりません', 404)
 
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
     return jsonify({'content': content})
 
 @app.route('/api/projects/<project>/files/<path:filename>', methods=['PUT'])
 def save_file(project, filename):
-    filepath = os.path.join(BASE_DIR, project, filename)
+    filepath = get_project_path(project, filename)
     data = request.json
     content = data.get('content', '')
 
-    # ディレクトリが存在しない場合は作成
-    file_dir = os.path.dirname(filepath)
-    if file_dir and not os.path.exists(file_dir):
-        os.makedirs(file_dir, exist_ok=True)
-
-    with open(filepath, 'w', encoding='utf-8') as f:
-        f.write(content)
+    write_text_file(filepath, content)
     return jsonify({'success': True})
 
 @app.route('/api/projects/<project>/files/<path:filename>', methods=['POST'])
 def create_file(project, filename):
     """新規ファイルを作成（既存の場合はそのまま返す）"""
-    project_dir = os.path.join(BASE_DIR, project)
-    os.makedirs(project_dir, exist_ok=True)
-    filepath = os.path.join(BASE_DIR, project, filename)
+    filepath = get_project_path(project, filename)
 
     created = False
     if not os.path.exists(filepath):
         # ファイル名に応じたテンプレートを使用
         template = get_template(filename)
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(template)
+        write_text_file(filepath, template)
         created = True
 
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
-
+    content = read_text_file(filepath)
     return jsonify({'content': content, 'created': created})
 
 @app.route('/api/projects/<project>/files/<path:filename>', methods=['DELETE'])
@@ -645,20 +1116,16 @@ def detect_series_from_project(project_name):
 
 def _read_and_trim(fpath, char_limit):
     """ファイルを読み込み、char_limit を超える場合は後半を省略する"""
-    if not os.path.exists(fpath):
+    content = read_text_file(fpath, None)
+    if content is None:
         return None
-    with open(fpath, 'r', encoding='utf-8') as f:
-        content = f.read()
     if len(content) > char_limit:
         content = content[:char_limit] + f'\n\n... （{len(content) - char_limit}字省略）'
     return content
 
 
 def get_series_context(series_name, char_limit_total=20000):
-    """シリーズ聖典を読み込む。
-    - bible.md / characters_master.md / foreshadowing.md / series_summary.md
-    - 各ファイルを均等に char_limit_total へ収める
-    """
+    """シリーズ聖典を読み込む。"""
     series_dir = get_series_dir(series_name)
     files = ['bible.md', 'characters_master.md', 'foreshadowing.md', 'series_summary.md']
     per_file_limit = char_limit_total // len(files)
@@ -673,11 +1140,8 @@ def get_series_context(series_name, char_limit_total=20000):
 
 
 def get_volume_context(project, include_plot=True, char_limit_total=10000):
-    """巻固有のコンテキストを読み込む。
-    - character.md / worldbuilding.md / timeline.md（+ オプションで plot.md）
-    - plot.md は他より長いため別枠で扱う
-    """
-    project_dir = os.path.join(BASE_DIR, project)
+    """巻固有のコンテキストを読み込む。"""
+    project_dir = get_project_path(project)
     support_files = ['character.md', 'worldbuilding.md', 'timeline.md']
     per_file_limit = char_limit_total // len(support_files)
 
@@ -699,12 +1163,7 @@ def get_volume_context(project, include_plot=True, char_limit_total=10000):
 
 
 def build_context_text(project, series=None, include_plot=True):
-    """Claude に渡すコンテキストテキストを組み立てる。
-    - シリーズ所属のプロジェクトなら、シリーズ聖典（~2万字）＋巻固有設定（~1万字）
-    - 単体プロジェクトなら従来どおり全ファイル（上限付き）
-    Returns:
-        ctx_text (str), context_summary (str)
-    """
+    """Claude に渡すコンテキストテキストを組み立てる。"""
     # シリーズを自動検出（明示的に渡されない場合）
     if series is None:
         series = detect_series_from_project(project)
@@ -719,7 +1178,7 @@ def build_context_text(project, series=None, include_plot=True):
         summary = f'シリーズ「{series}」／巻プロジェクト「{project}」の階層コンテキストを使用'
     else:
         # 単体プロジェクト：従来どおりだが文字数上限を設ける
-        project_dir = os.path.join(BASE_DIR, project)
+        project_dir = get_project_path(project)
         for fname in ['character.md', 'worldbuilding.md', 'timeline.md']:
             fpath = os.path.join(project_dir, fname)
             content = _read_and_trim(fpath, 3000)
@@ -737,14 +1196,14 @@ def build_context_text(project, series=None, include_plot=True):
 
 
 def get_project_context(project):
-    """後方互換用ラッパー（既存呼び出し箇所が残る場合に備える）"""
-    project_dir = os.path.join(BASE_DIR, project)
+    """後方互換用ラッパー"""
+    project_dir = get_project_path(project)
     context = {}
     for fname in ['character.md', 'plot.md', 'worldbuilding.md', 'timeline.md']:
         fpath = os.path.join(project_dir, fname)
-        if os.path.exists(fpath):
-            with open(fpath, 'r', encoding='utf-8') as f:
-                context[fname] = f.read()
+        content = read_text_file(fpath, None)
+        if content is not None:
+            context[fname] = content
     return context
 
 # --- Claude API ---
@@ -903,10 +1362,37 @@ def draft_to_plot():
     if not draft_content or draft_content == '# plot_draft':
         return jsonify({'error': 'plot_draft.md に内容が書かれていません'}), 400
 
+    # character.md を読み込む（要約版）
+    character_path = os.path.join(project_dir, 'character.md')
+    character_info = ""
+    if os.path.exists(character_path):
+        with open(character_path, 'r', encoding='utf-8') as f:
+            full_character_content = f.read()
+
+        # キャラクター情報を要約（人間関係・家族構成を最重要として）
+        summary, relationships_and_family = summarize_existing_characters(full_character_content)
+
+        if relationships_and_family:
+            character_info = f"""
+## 既存キャラクター設定（最重要）
+
+### 人間関係・家族構成
+{relationships_and_family}
+
+### キャラクター概要
+{summary}
+"""
+        elif summary:
+            character_info = f"""
+## 既存キャラクター設定
+{summary}
+"""
+
     # plot_draft.mdの構造を解析して動的にテンプレートを生成
     plot_template = generate_plot_template(draft_content)
 
-    prompt = f"""以下の「プロット草稿」を読み込み、指定された「出力テンプレート」の各セクションを埋めてください。
+    prompt = f"""以下の「既存キャラクター設定」と「プロット草稿」を読み込み、指定された「出力テンプレート」の各セクションを埋めてください。
+{character_info}
 
 ## プロット草稿
 {draft_content}
@@ -915,6 +1401,7 @@ def draft_to_plot():
 {plot_template}
 
 ### 指示
+- **既存キャラクター設定の「人間関係・家族構成」を最優先し、絶対に矛盾しないこと**
 - テンプレートの見出し（# ## など）はそのまま維持してください
 - **テンプレートに記載された章のみを出力してください。勝手に章を追加しないこと**
 - 草稿の内容を適切に各セクションへ振り分けてください
@@ -927,21 +1414,36 @@ def draft_to_plot():
 - 草稿に記載のない項目は、文脈から自然に補完してください
 - 出力はテンプレートのマークダウンのみとし、説明文や前置きは一切不要です"""
 
-    message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=30000,
-        messages=[{'role': 'user', 'content': prompt}],
-        timeout=600.0  # 10分のタイムアウト
+    # ストリーミングで返す
+    from flask import stream_with_context, Response
+
+    def generate_stream():
+        try:
+            accumulated_text = ""
+
+            with client.messages.stream(
+                model='claude-opus-4-6',
+                max_tokens=30000,
+                messages=[{'role': 'user', 'content': prompt}]
+            ) as stream:
+                for text in stream.text_stream:
+                    accumulated_text += text
+                    yield f"data: {json.dumps({'chunk': text})}\n\n"
+
+            # plot.md として保存
+            plot_path = os.path.join(project_dir, 'plot.md')
+            with open(plot_path, 'w', encoding='utf-8') as f:
+                f.write(accumulated_text)
+
+            yield f"data: {json.dumps({'done': True, 'saved': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate_stream()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
     )
-
-    generated = message.content[0].text.strip()
-
-    # plot.md として保存
-    plot_path = os.path.join(project_dir, 'plot.md')
-    with open(plot_path, 'w', encoding='utf-8') as f:
-        f.write(generated)
-
-    return jsonify({'content': generated, 'saved': True})
 
 @app.route('/api/claude/plot_draft_to_timeline', methods=['POST'])
 def plot_draft_to_timeline():
@@ -1018,7 +1520,7 @@ def plot_draft_to_timeline():
 
     message = client.messages.create(
         model='claude-opus-4-6',
-        max_tokens=10000,
+        max_tokens=30000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=600.0
     )
@@ -1128,7 +1630,7 @@ def plot_draft_to_worldbuilding():
 
     message = client.messages.create(
         model='claude-opus-4-6',
-        max_tokens=10000,
+        max_tokens=30000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=600.0
     )
@@ -1189,7 +1691,7 @@ def plot_draft_to_characters():
 
     message = client.messages.create(
         model='claude-opus-4-6',
-        max_tokens=1000,
+        max_tokens=30000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=60.0
     )
@@ -1249,7 +1751,7 @@ def list_characters_from_file():
 
     message = client.messages.create(
         model='claude-opus-4-6',
-        max_tokens=1000,
+        max_tokens=30000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=60.0
     )
@@ -1305,28 +1807,41 @@ def generate_character_from_draft():
         if series_ctx:
             series_ctx_text = f'\n\n## シリーズ共通設定（既存キャラクターとの整合性を保つこと）\n{series_ctx}'
 
-    # 既存のcharacter.mdを読み込む
+    # 既存のcharacter.mdを読み込み、要約と人間関係・家族構成を抽出
     character_path = os.path.join(project_dir, 'character.md')
-    existing_characters_text = ''
+    existing_characters_summary = ''
+    existing_relationships_and_family = ''
+
     if os.path.exists(character_path):
         with open(character_path, 'r', encoding='utf-8') as f:
             existing_characters_content = f.read().strip()
             if existing_characters_content:
-                existing_characters_text = f"""
+                summary, relationships_and_family = summarize_existing_characters(existing_characters_content)
+                existing_characters_summary = summary
+                existing_relationships_and_family = relationships_and_family
 
-## 既存キャラクター情報
-以下は既に作成されているキャラクターです。これらとの関係性や整合性を考慮してください：
-
-{existing_characters_content}
-"""
-
+    # プロンプト構築（重要な情報を前半に配置）
     prompt = f"""以下のプロット展開案から「{character_name}」というキャラクターの情報を抽出し、詳細なキャラクタープロファイルを作成してください。
+
+【最重要】既存キャラクターの人間関係・家族構成
+以下の情報は**絶対に厳守**してください。既存キャラクターとの関係性や家族構成に矛盾が生じないようにすることが最優先です：
+
+{existing_relationships_and_family if existing_relationships_and_family else '（まだ人間関係・家族構成の記載はありません）'}
+
+---
+
+## 既存キャラクター一覧（要約）
+以下は既に作成されているキャラクターです。これらとの整合性を保ってください：
+
+{existing_characters_summary if existing_characters_summary else '（まだ他のキャラクターは作成されていません）'}
+
+---
 {series_ctx_text}
 
 ## プロット展開案
 {draft_content}
 
-{existing_characters_text}
+---
 
 ## 出力形式
 
@@ -1364,21 +1879,25 @@ def generate_character_from_draft():
 - その目標を持つ理由:
 
 ## 人間関係
-- (プロットから読み取れる他キャラクターとの関係を記載)
+- (既存キャラクターとの関係を**必ず**記載。上記「既存キャラクターの人間関係・家族構成」セクションの情報を厳守すること)
 
 ## その他
 - (プロットに記載されている追加情報)
 
 ### 指示事項
 
-1. プロット展開案に記載されている{character_name}の情報を最大限活用してください
-2. プロットに記載がない項目は、物語の世界観とテーマに合わせて自然に補完してください
-3. キャラクターの物語での役割を明確にしてください
-4. マークダウン形式で出力し、説明文や前置きは不要です"""
+1. 【最重要】上記「既存キャラクターの人間関係・家族構成」セクションに記載された情報は**絶対に矛盾させないこと**
+   - 特に家族構成（親、兄弟姉妹など）は既存キャラクターの設定と完全に一致させること
+   - 人間関係（友人、恋人、師弟関係など）も既存設定を厳守すること
+2. プロット展開案に記載されている{character_name}の情報を最大限活用してください
+3. 既存キャラクター一覧を参照し、名前の表記や設定との整合性を保ってください
+4. プロットに記載がない項目は、物語の世界観とテーマに合わせて自然に補完してください
+5. キャラクターの物語での役割を明確にしてください
+6. マークダウン形式で出力し、説明文や前置きは不要です"""
 
     message = client.messages.create(
         model='claude-opus-4-6',
-        max_tokens=5000,
+        max_tokens=30000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=300.0
     )
@@ -1398,17 +1917,12 @@ def character_chat_start():
     mode = data.get('mode', 'from_draft')  # from_draft, new, edit_existing
 
     if not project:
-        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+        return error_response('プロジェクトが指定されていません')
 
-    # 新規作成モードでキャラクター名が指定されていない場合は後で生成
-    if mode == 'from_draft' and not character_name:
-        return jsonify({'error': 'キャラクター名が指定されていません'}), 400
+    if mode in ['from_draft', 'edit_existing'] and not character_name:
+        return error_response('キャラクター名が指定されていません')
 
-    # 既存キャラクター修正モードではキャラクター名が必須
-    if mode == 'edit_existing' and not character_name:
-        return jsonify({'error': 'キャラクター名が指定されていません'}), 400
-
-    project_dir = os.path.join(BASE_DIR, project)
+    project_dir = get_project_path(project)
 
     # シリーズ聖典があれば追加コンテキストとして使う
     series_ctx_text = ''
@@ -1418,152 +1932,70 @@ def character_chat_start():
         if series_ctx:
             series_ctx_text = f'\n\n## シリーズ共通設定（既存キャラクターとの整合性を保つこと）\n{series_ctx}'
 
-    # 既存のcharacter.mdを読み込む
-    character_path = os.path.join(project_dir, 'character.md')
-    existing_characters = ''
-    if os.path.exists(character_path):
-        with open(character_path, 'r', encoding='utf-8') as f:
-            existing_characters = f.read().strip()
+    # 既存のcharacter.mdを読み込み、要約と人間関係・家族構成を抽出
+    existing_characters = read_text_file(get_project_path(project, 'character.md'))
+    existing_characters_summary = ''
+    existing_relationships_and_family = ''
 
-    character_info_section = ""
     if existing_characters:
-        character_info_section = f"""
-
-## 既存キャラクター情報
-以下は既に作成されているキャラクターです。必要に応じて参照し、関係性や整合性を考慮してください：
-
-{existing_characters}
-"""
+        summary, relationships_and_family = summarize_existing_characters(existing_characters)
+        existing_characters_summary = summary
+        existing_relationships_and_family = relationships_and_family
 
     # モードに応じてプロンプトを構築
     if mode == 'new':
-        # 新規作成モード
-        plot_path = os.path.join(project_dir, 'plot.md')
-        plot_content = ''
-        if os.path.exists(plot_path):
-            with open(plot_path, 'r', encoding='utf-8') as f:
-                plot_content = f.read().strip()
-
+        plot_content = read_text_file(get_project_path(project, 'plot.md'))
         plot_info_section = f"## プロット情報\n{plot_content}" if plot_content else ""
 
-        system_prompt = f"""あなたは小説のキャラクター設定を作成するアシスタントです。
-ユーザーと対話しながら、{character_role}の詳細なプロファイルを作成します。
+        # 既存キャラクター情報セクション（要約版）
+        character_info_section = ""
+        if existing_characters_summary or existing_relationships_and_family:
+            character_info_section = f"""
 
-{series_ctx_text}
+【重要】既存キャラクターの人間関係・家族構成
+以下の情報を**必ず参照**してください：
+{existing_relationships_and_family if existing_relationships_and_family else '（まだ人間関係・家族構成の記載はありません）'}
 
-{plot_info_section}
+## 既存キャラクター一覧（要約）
+{existing_characters_summary if existing_characters_summary else '（まだ他のキャラクターは作成されていません）'}
+"""
 
-{character_info_section}
-
-## 役割
-1. {character_role}として魅力的なキャラクタープロファイルの初案を提示してください
-2. キャラクター名も含めて提案してください
-3. ユーザーが既存キャラクターとの関係性を指定した場合（例：「主人公のライバル」）、既存キャラクター情報を参照して整合性のあるキャラクターを作成してください
-4. ユーザーからの修正要望に応じて、キャラクター設定を調整してください
-5. 常に以下のフォーマットでキャラクター情報を出力してください："""
-
+        system_prompt = f"あなたは小説のキャラクター設定を作成するアシスタントです。\nユーザーと対話しながら、{character_role}の詳細なプロファイルを作成します。\n\n{series_ctx_text}\n\n{plot_info_section}\n\n{character_info_section}\n\n## 役割\n1. {character_role}として魅力的なキャラクタープロファイルの初案を提示してください\n2. キャラクター名も含めて提案してください\n3. 既存キャラクターとの関係性（特に人間関係・家族構成）を**必ず**考慮してください\n4. ユーザー要望に応じて調整してください\n{PROMPTS['character_format']}"
         initial_user_message = f'{character_role}のキャラクター設定を提案してください。キャラクター名も含めて提案してください。'
 
     elif mode == 'edit_existing':
-        # 既存キャラクター修正モード
-        system_prompt = f"""あなたは小説のキャラクター設定を修正・改善するアシスタントです。
-ユーザーと対話しながら、「{character_name}」というキャラクターの設定を修正します。
-
-{series_ctx_text}
-
-## 既存キャラクター情報
-{existing_characters}
-
-## 役割
-1. 上記の既存キャラクター情報から「{character_name}」の現在の設定を抽出して提示してください
-2. ユーザーからの修正要望（例：「年齢を変更」「性格をもっと明るく」など）に応じて設定を調整してください
-3. 他のキャラクターとの整合性を保ちながら修正してください
-4. 常に以下のフォーマットでキャラクター情報を出力してください："""
-
+        system_prompt = f"あなたは小説のキャラクター設定を修正・改善するアシスタントです。\nユーザーと対話しながら、「{character_name}」というキャラクターの設定を修正します。\n\n{series_ctx_text}\n\n## 既存キャラクター情報\n{existing_characters}\n\n## 役割\n1. 「{character_name}」の現在の設定を提示してください\n2. ユーザー要望に応じて調整してください\n3. 他のキャラクターとの整合性を保ってください\n{PROMPTS['character_format']}"
         initial_user_message = f'「{character_name}」の現在の設定を提示してください。'
 
-    else:
-        # plot_draftから生成モード
-        draft_path = os.path.join(project_dir, 'plot_draft.md')
-        if not os.path.exists(draft_path):
-            return jsonify({'error': 'plot_draft.md がプロジェクト内に見つかりません'}), 404
+    else: # from_draft
+        draft_content = read_text_file(get_project_path(project, 'plot_draft.md'), None)
+        if draft_content is None:
+            return error_response('plot_draft.md がプロジェクト内に見つかりません', 404)
 
-        with open(draft_path, 'r', encoding='utf-8') as f:
-            draft_content = f.read().strip()
+        # 既存キャラクター情報セクション（要約版、人間関係・家族構成を最重要として配置）
+        character_info_section = ""
+        if existing_characters_summary or existing_relationships_and_family:
+            character_info_section = f"""
 
-        system_prompt = f"""あなたは小説のキャラクター設定を作成するアシスタントです。
-ユーザーと対話しながら、「{character_name}」というキャラクターの詳細なプロファイルを作成します。
+【最重要】既存キャラクターの人間関係・家族構成
+以下の情報は**絶対に厳守**してください。既存キャラクターとの関係性や家族構成に矛盾が生じないようにすることが最優先です：
+{existing_relationships_and_family if existing_relationships_and_family else '（まだ人間関係・家族構成の記載はありません）'}
 
-以下のプロット展開案を参考にしてください：
-{series_ctx_text}
+## 既存キャラクター一覧（要約）
+{existing_characters_summary if existing_characters_summary else '（まだ他のキャラクターは作成されていません）'}
+"""
 
-## プロット展開案
-{draft_content}
-
-{character_info_section}
-
-## 役割
-1. プロット展開案から{character_name}の情報を抽出し、詳細なキャラクタープロファイルの初案を提示してください
-2. 既存キャラクター情報がある場合は、それらとの関係性や整合性を考慮してください
-3. ユーザーからの修正要望に応じて、キャラクター設定を調整してください
-4. 常に以下のフォーマットでキャラクター情報を出力してください："""
-
+        system_prompt = f"あなたは小説のキャラクター設定を作成するアシスタントです。\nユーザーと対話しながら、「{character_name}」というキャラクターの詳細なプロファイルを作成します。\n\n{character_info_section}\n\n## シリーズ設定・プロット展開案\n{series_ctx_text}\n\n{draft_content}\n\n## 役割\n1. プロットから{character_name}の情報を抽出し、詳細な初案を提示してください\n2. 【最重要】既存キャラクターの人間関係・家族構成情報を**絶対に矛盾させないこと**（特に家族構成は厳守）\n3. 既存キャラクター一覧を参照し、名前の表記や設定との整合性を保つこと\n4. ユーザー要望に応じて調整してください\n{PROMPTS['character_format']}"
         initial_user_message = f'{character_name}のキャラクター設定を提案してください。'
-
-    # 共通のフォーマット部分を追加
-    system_prompt += """
-
-# キャラクター設定
-
-## 基本情報
-- 名前:
-- 役割:
-- 年齢:
-- 性別:
-- 職業:
-
-## 外見
-- 身長:
-- 体格:
-- 髪型・髪色:
-- 目の色:
-- 特徴的な外見:
-
-## 性格
-- 基本的な性格:
-- 長所:
-- 短所:
-- 癖・口癖:
-
-## 背景
-- 生い立ち:
-- 家族構成:
-- 重要な過去の出来事:
-
-## 目標・動機
-- 物語における目標:
-- その目標を持つ理由:
-
-## 人間関係
-- (他キャラクターとの関係)
-
-## その他
-- (追加情報)
-
-## 指示事項
-- ユーザーの修正要望には柔軟に対応してください
-- 修正時は、変更した部分を明確にしてください
-- 物語の世界観との整合性を保ってください"""
 
     # 初回のキャラクター情報を生成
     initial_message = client.messages.create(
         model='claude-opus-4-6',
-        max_tokens=5000,
+        max_tokens=30000,
         system=system_prompt,
         messages=[{'role': 'user', 'content': initial_user_message}],
         timeout=300.0
     )
-
     initial_response = initial_message.content[0].text.strip()
 
     # セッションIDを生成
@@ -1572,98 +2004,37 @@ def character_chat_start():
     session_id = f"{project}_{session_name}_{int(time.time())}"
 
     # セッション情報を保存
-    character_chat_sessions[session_id] = {
+    chat_sessions[session_id] = {
         'project': project,
         'series': series,
-        'character_name': character_name if character_name else '新規キャラクター',
+        'character_name': character_name or '新規キャラクター',
         'system_prompt': system_prompt,
         'messages': [
             {'role': 'user', 'content': initial_user_message},
             {'role': 'assistant', 'content': initial_response}
-        ]
+        ],
+        'model': 'claude-opus-4-6'
     }
 
-    return jsonify({
-        'session_id': session_id,
-        'response': initial_response
-    })
+    return jsonify({'session_id': session_id, 'response': initial_response})
 
 @app.route('/api/claude/character_chat_continue', methods=['POST'])
 def character_chat_continue():
     """キャラクター生成チャットを継続する"""
     data = request.json
-    session_id = data.get('session_id', '')
-    user_message = data.get('message', '')
-
-    if not session_id or session_id not in character_chat_sessions:
-        return jsonify({'error': '無効なセッションIDです'}), 400
-
-    if not user_message:
-        return jsonify({'error': 'メッセージが空です'}), 400
-
-    session = character_chat_sessions[session_id]
-
-    # メッセージ履歴に追加
-    session['messages'].append({'role': 'user', 'content': user_message})
-
-    # Claude APIを呼び出し
-    message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=5000,
-        system=session['system_prompt'],
-        messages=session['messages'],
-        timeout=300.0
-    )
-
-    response = message.content[0].text.strip()
-
-    # レスポンスをメッセージ履歴に追加
-    session['messages'].append({'role': 'assistant', 'content': response})
-
-    return jsonify({'response': response})
+    return _chat_continue(data.get('session_id'), data.get('message'))
 
 @app.route('/api/claude/character_chat_finalize', methods=['POST'])
 def character_chat_finalize():
     """チャットで作成したキャラクター情報を確定して保存する"""
     data = request.json
-    session_id = data.get('session_id', '')
-
-    if not session_id or session_id not in character_chat_sessions:
-        return jsonify({'error': '無効なセッションIDです'}), 400
-
-    session = character_chat_sessions[session_id]
-
-    # 最終的なキャラクター情報を取得（最後のアシスタントのメッセージ）
-    final_character_info = None
-    for msg in reversed(session['messages']):
-        if msg['role'] == 'assistant':
-            final_character_info = msg['content']
-            break
-
-    if not final_character_info:
-        return jsonify({'error': 'キャラクター情報が見つかりません'}), 400
-
-    # セッションを削除
-    del character_chat_sessions[session_id]
-
-    return jsonify({
-        'result': final_character_info,
-        'message': 'キャラクター情報を確定しました'
-    })
+    return _chat_finalize(data.get('session_id'))
 
 @app.route('/api/claude/character_chat_cancel', methods=['POST'])
 def character_chat_cancel():
     """キャラクター生成チャットをキャンセルする"""
     data = request.json
-    session_id = data.get('session_id', '')
-
-    if not session_id or session_id not in character_chat_sessions:
-        return jsonify({'error': '無効なセッションIDです'}), 400
-
-    # セッションを削除
-    del character_chat_sessions[session_id]
-
-    return jsonify({'message': 'チャットセッションをキャンセルしました'})
+    return _chat_cancel(data.get('session_id'))
 
 @app.route('/api/claude/plot_chat_start', methods=['POST'])
 def plot_chat_start():
@@ -1711,91 +2082,7 @@ def plot_chat_start():
     }
     length_guideline = length_guidelines.get(length, '総文字数目標と章数を適切に設定してください')
 
-    format_instruction = f"""
-## 出力形式
-
-以下の形式に厳密に従って、詳細なプロット展開案を作成してください：
-
-# プロット展開案
-## 『タイトル（仮題）』
-
----
-
-## 全体構造の概観
-
-**{length_guideline}**
-
-| ブロック | 章 | 機能 | 文字数目安 |
-|---|---|---|---|
-| 第一部「[部タイトル]」 | 第1〜[章数]章 | [機能説明] | 約[文字数] |
-| 第二部「[部タイトル]」 | 第[章数]〜[章数]章 | [機能説明] | 約[文字数] |
-（目標執筆量に応じて部数を調整）
-
----
-
-## 物語の核心について
-
-展開の中心となる主題やテーマ、物語が提示する主要な問いについて説明してください。
-複数の展開案がある場合は、それぞれの強みとテーマへの寄与度を記載してください。
-
----
-
-## 登場人物の追加設定（必要な場合）
-
-プロット上必要な未設定キャラクターがいる場合、ここに記載してください。
-
----
-
-## 第一部「[部タイトル]」　第1〜[章数]章　約[文字数]
-
-### 第1章「[章タイトル]」　約[文字数]
-
-**主な展開：**
-この章で起こる出来事を具体的に記述してください。
-場面、登場人物の行動、会話の要点、感情の動きなどを含めてください。
-
-**ポイント：**
-- この章の物語上の役割
-- 伏線の配置
-- キャラクターの成長や変化
-
----
-
-（以下、各章について同様の形式で記述）
-
----
-
-## 伏線一覧と回収タイミング
-
-| 伏線 | 設置章 | 回収章 | 内容 |
-|---|---|---|---|
-| [伏線の内容] | 第[章数]章 | 第[章数]章 | [詳細] |
-
----
-
-## 読者を引きつけるポイント
-
-**①[ポイント1のタイトル]**
-説明
-
-**②[ポイント2のタイトル]**
-説明
-
-（3〜5つ程度）
-
----
-
-## 章ごとの文字数配分まとめ
-
-| 章 | タイトル（仮） | 目安文字数 |
-|---|---|---|
-| 第1章 | [タイトル] | [文字数] |
-| 第2章 | [タイトル] | [文字数] |
-（全章を記載）
-| **合計** | | **約[総文字数]** |
-
----
-"""
+    format_instruction = PROMPTS['plot_format'].format(length_guideline=length_guideline)
 
     system_prompt = f"""あなたは小説のプロット展開案を作成するアシスタントです。
 ユーザーと対話しながら、魅力的なプロット展開案を作成します。
@@ -1819,114 +2106,66 @@ def plot_chat_start():
 
     initial_user_message = f'{length}の小説のプロット展開案を提案してください。'
 
-    # 初回のプロット案を生成
-    initial_message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=8000,
-        system=system_prompt,
-        messages=[{'role': 'user', 'content': initial_user_message}],
-        timeout=300.0
+    # ストリーミングで返す
+    from flask import stream_with_context, Response
+
+    def generate_stream():
+        try:
+            # セッションIDを生成
+            import time
+            session_id = f"{project}_plot_{int(time.time())}"
+
+            accumulated_text = ""
+
+            with client.messages.stream(
+                model='claude-opus-4-6',
+                max_tokens=30000,
+                system=system_prompt,
+                messages=[{'role': 'user', 'content': initial_user_message}]
+            ) as stream:
+                for text in stream.text_stream:
+                    accumulated_text += text
+                    yield f"data: {json.dumps({'chunk': text})}\n\n"
+
+            # セッション情報を保存（チャット継続用）
+            chat_sessions[session_id] = {
+                'project': project,
+                'series': series,
+                'system_prompt': system_prompt,
+                'messages': [
+                    {'role': 'user', 'content': initial_user_message},
+                    {'role': 'assistant', 'content': accumulated_text}
+                ],
+                'model': 'claude-opus-4-6'
+            }
+
+            yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate_stream()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
     )
-
-    initial_response = initial_message.content[0].text.strip()
-
-    # セッションIDを生成
-    import time
-    session_id = f"{project}_plot_{int(time.time())}"
-
-    # セッション情報を保存
-    plot_chat_sessions[session_id] = {
-        'project': project,
-        'series': series,
-        'length': length,
-        'system_prompt': system_prompt,
-        'messages': [
-            {'role': 'user', 'content': initial_user_message},
-            {'role': 'assistant', 'content': initial_response}
-        ]
-    }
-
-    return jsonify({
-        'session_id': session_id,
-        'response': initial_response
-    })
 
 @app.route('/api/claude/plot_chat_continue', methods=['POST'])
 def plot_chat_continue():
     """プロット展開案チャットを継続する"""
     data = request.json
-    session_id = data.get('session_id', '')
-    user_message = data.get('message', '')
-
-    if not session_id or session_id not in plot_chat_sessions:
-        return jsonify({'error': '無効なセッションIDです'}), 400
-
-    if not user_message:
-        return jsonify({'error': 'メッセージが空です'}), 400
-
-    session = plot_chat_sessions[session_id]
-
-    # メッセージ履歴に追加
-    session['messages'].append({'role': 'user', 'content': user_message})
-
-    # Claude APIを呼び出し
-    message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=8000,
-        system=session['system_prompt'],
-        messages=session['messages'],
-        timeout=300.0
-    )
-
-    response = message.content[0].text.strip()
-
-    # レスポンスをメッセージ履歴に追加
-    session['messages'].append({'role': 'assistant', 'content': response})
-
-    return jsonify({'response': response})
+    return _chat_continue(data.get('session_id'), data.get('message'))
 
 @app.route('/api/claude/plot_chat_finalize', methods=['POST'])
 def plot_chat_finalize():
     """チャットで作成したプロット案を確定する"""
     data = request.json
-    session_id = data.get('session_id', '')
-
-    if not session_id or session_id not in plot_chat_sessions:
-        return jsonify({'error': '無効なセッションIDです'}), 400
-
-    session = plot_chat_sessions[session_id]
-
-    # 最終的なプロット案を取得（最後のアシスタントのメッセージ）
-    final_plot = None
-    for msg in reversed(session['messages']):
-        if msg['role'] == 'assistant':
-            final_plot = msg['content']
-            break
-
-    if not final_plot:
-        return jsonify({'error': 'プロット案が見つかりません'}), 400
-
-    # セッションを削除
-    del plot_chat_sessions[session_id]
-
-    return jsonify({
-        'result': final_plot,
-        'message': 'プロット案を確定しました'
-    })
+    return _chat_finalize(data.get('session_id'))
 
 @app.route('/api/claude/plot_chat_cancel', methods=['POST'])
 def plot_chat_cancel():
     """プロット展開案チャットをキャンセルする"""
     data = request.json
-    session_id = data.get('session_id', '')
-
-    if not session_id or session_id not in plot_chat_sessions:
-        return jsonify({'error': '無効なセッションIDです'}), 400
-
-    # セッションを削除
-    del plot_chat_sessions[session_id]
-
-    return jsonify({'message': 'チャットセッションをキャンセルしました'})
+    return _chat_cancel(data.get('session_id'))
 
 @app.route('/api/claude/generate_catchcopy', methods=['POST'])
 def generate_catchcopy():
@@ -2018,7 +2257,7 @@ def generate_catchcopy():
 
     message = client.messages.create(
         model='claude-opus-4-6',
-        max_tokens=10000,
+        max_tokens=30000,
         messages=[{'role': 'user', 'content': prompt}],
         timeout=600.0
     )
@@ -2062,8 +2301,13 @@ def generate_chapters():
     data = request.json
     project = data.get('project', '')
     series = data.get('series', '') or None   # ★ フロントから渡されたシリーズ名
+    writing_style = data.get('writing_style', 'standard')  # デフォルトは標準
     if not project:
         return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    # 文体の取得
+    style_config = WRITING_STYLES.get(writing_style, WRITING_STYLES['standard'])
+    style_instruction = style_config['instruction']
 
     project_dir = os.path.join(BASE_DIR, project)
 
@@ -2262,6 +2506,9 @@ def generate_chapters():
 【この{section_label}のプロット（必ず全て忠実に本文化すること）】
 {body}
 
+【文体指定】
+{style_instruction}
+
 【執筆上の指示】
 1. プロットに記載された出来事・シーン・セリフの要点は必ず全て描写すること
 2. プロットの順序を守り、場面を飛ばさないこと
@@ -2281,7 +2528,7 @@ def generate_chapters():
         # max_tokensを増やして十分な長さの本文を生成（3000〜5000字 ≒ 8000〜12000トークン程度）
         message = client.messages.create(
             model='claude-opus-4-6',
-            max_tokens=20000,  # プロットに忠実な長めの本文を生成するため増量
+            max_tokens=30000,  # プロットに忠実な長めの本文を生成するため増量
             messages=[{'role': 'user', 'content': prompt}],
             timeout=1800.0  # 30分のタイムアウト
         )
@@ -2481,7 +2728,7 @@ def run_notation_check(project_dir, project, series):
         try:
             with client.messages.stream(
                 model='claude-opus-4-6',
-                max_tokens=16000,
+                max_tokens=30000,
                 messages=[{'role': 'user', 'content': prompt}],
             ) as stream:
                 for text in stream.text_stream:
@@ -2791,7 +3038,7 @@ def run_consistency_check():
         try:
             with client.messages.stream(
                 model='claude-opus-4-6',
-                max_tokens=16000,  # 整合性チェック結果が途中で切れないように大幅に増加
+                max_tokens=30000,  # 整合性チェック結果が途中で切れないように大幅に増加
                 messages=[{'role': 'user', 'content': prompt}],
             ) as stream:
                 for text in stream.text_stream:
@@ -2915,7 +3162,7 @@ def fix_chapter_file():
     try:
         message = client.messages.create(
             model='claude-opus-4-6',
-            max_tokens=20000,
+            max_tokens=30000,
             messages=[{'role': 'user', 'content': prompt}],
             timeout=1800.0
         )
@@ -3021,7 +3268,7 @@ def fix_notation_issues():
             # Claude APIで修正版を生成
             message = client.messages.create(
                 model='claude-opus-4-6',
-                max_tokens=20000,
+                max_tokens=30000,
                 messages=[{'role': 'user', 'content': prompt}],
                 timeout=1800.0
             )
@@ -3135,7 +3382,7 @@ def fix_plot_inconsistencies():
     try:
         message = client.messages.create(
             model='claude-opus-4-6',
-            max_tokens=8000,
+            max_tokens=30000,
             messages=[{'role': 'user', 'content': prompt}],
         )
         corrected_plot = message.content[0].text
@@ -3286,7 +3533,7 @@ def generate_spoiler_free_synopsis():
     try:
         message = client.messages.create(
             model='claude-opus-4-6',
-            max_tokens=3000,
+            max_tokens=30000,
             messages=[{'role': 'user', 'content': prompt}],
         )
         synopsis = message.content[0].text
@@ -3315,17 +3562,48 @@ def generate():
     else:
         ctx_text = ''
 
+    # plot_draft と generate_character アクション: character.md を要約版で読み込む
+    character_context_for_plot = ""
+    if action in ['plot_draft', 'generate_character'] and project:
+        project_dir = os.path.join(BASE_DIR, project)
+        character_path = os.path.join(project_dir, 'character.md')
+        if os.path.exists(character_path):
+            with open(character_path, 'r', encoding='utf-8') as f:
+                full_character_content = f.read()
+
+            # キャラクター情報を要約（人間関係・家族構成を最重要として）
+            summary, relationships_and_family = summarize_existing_characters(full_character_content)
+
+            if relationships_and_family:
+                character_context_for_plot = f"""
+## 既存キャラクター設定（最重要）
+
+### 人間関係・家族構成
+{relationships_and_family}
+
+### キャラクター概要
+{summary}
+"""
+            elif summary:
+                character_context_for_plot = f"""
+## 既存キャラクター設定
+{summary}
+"""
+
     # キャラクター役割を取得
     character_role = data.get('character_role', 'メインキャラクター')
 
     prompts = {
         'generate_character': f"""以下のプロジェクト設定を参考に、詳細なキャラクタープロファイルを提案してください。
+{character_context_for_plot}
 
 {ctx_text}
 
 キャラクターの役割: {character_role}
 
 追加の要望: {extra_context}
+
+**重要**: 既存キャラクター設定の「人間関係・家族構成」を最優先し、絶対に矛盾しないこと
 
 以下のフォーマットに厳密に従って、詳細なキャラクタープロファイルを作成してください：
 
@@ -3369,6 +3647,7 @@ def generate():
 上記のフォーマットの各項目を埋めてください。マークダウン形式で出力し、説明文や前置きは不要です。""",
 
         'plot_draft': f"""以下のプロジェクト設定を参考に、詳細なプロット展開案を提案してください。
+{character_context_for_plot}
 
 {ctx_text}
 
@@ -3381,6 +3660,8 @@ def generate():
 - 短編: 5,000文字前後（章数: 3-5章、部構造なし）
 - 中編: 50,000文字前後（章数: 10-15章、2-3部構成）
 - 長編: 100,000文字前後（章数: 20-30章、3-4部構成）
+
+**重要**: 既存キャラクター設定の「人間関係・家族構成」を最優先し、絶対に矛盾しないこと
 
 ## 出力形式
 
@@ -3538,15 +3819,127 @@ def generate():
     prompt = prompts.get(action, extra_context)
     if not prompt:
         return jsonify({'error': '不明なアクション'}), 400
-    
-    message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=30000,
-        messages=[{'role': 'user', 'content': prompt}],
-        timeout=600.0  # 10分のタイムアウト
+
+    # ストリーミングで返す
+    from flask import stream_with_context, Response
+    import uuid
+
+    # セッションIDを生成
+    session_id = str(uuid.uuid4())
+
+    def generate_stream():
+        try:
+            accumulated_text = ""
+            is_truncated = False
+
+            with client.messages.stream(
+                model='claude-opus-4-6',
+                max_tokens=30000,
+                messages=[{'role': 'user', 'content': prompt}]
+            ) as stream:
+                for text in stream.text_stream:
+                    accumulated_text += text
+                    yield f"data: {json.dumps({'chunk': text})}\n\n"
+
+                # ストリームのメタデータを取得してトランケーション検出
+                final_message = stream.get_final_message()
+                if final_message.stop_reason == 'max_tokens':
+                    is_truncated = True
+
+            # セッションに保存（続きから生成用）
+            session[f'claude_session_{session_id}'] = {
+                'prompt': prompt,
+                'accumulated_text': accumulated_text,
+                'action': action,
+                'project': project,
+                'series': series,
+                'current_content': current_content,
+                'extra_context': extra_context,
+                'is_truncated': is_truncated
+            }
+
+            yield f"data: {json.dumps({'done': True, 'session_id': session_id, 'is_truncated': is_truncated})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate_stream()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
     )
 
-    return jsonify({'result': message.content[0].text})
+
+@app.route('/api/claude/continue', methods=['POST'])
+def claude_continue():
+    """途切れたストリーミングの続きを生成"""
+    data = request.json
+    session_id = data.get('session_id', '')
+
+    if not session_id:
+        return jsonify({'error': 'セッションIDが指定されていません'}), 400
+
+    # セッションから前回の情報を取得
+    session_key = f'claude_session_{session_id}'
+    if session_key not in session:
+        return jsonify({'error': 'セッションが見つかりません'}), 404
+
+    session_data = session[session_key]
+    previous_text = session_data.get('accumulated_text', '')
+
+    # 続きを生成するプロンプト
+    continue_prompt = f"""前回の出力:
+{previous_text}
+
+上記の続きを書いてください。前回の内容を繰り返さず、続きの部分だけを出力してください。"""
+
+    from flask import stream_with_context, Response
+    import uuid
+
+    # 新しいセッションIDを生成
+    new_session_id = str(uuid.uuid4())
+
+    def generate_stream():
+        try:
+            accumulated_text = previous_text  # 前回分を含める
+            new_text = ""
+            is_truncated = False
+
+            with client.messages.stream(
+                model='claude-opus-4-6',
+                max_tokens=30000,
+                messages=[{'role': 'user', 'content': continue_prompt}]
+            ) as stream:
+                for text in stream.text_stream:
+                    new_text += text
+                    accumulated_text += text
+                    yield f"data: {json.dumps({'chunk': text})}\n\n"
+
+                # ストリームのメタデータを取得してトランケーション検出
+                final_message = stream.get_final_message()
+                if final_message.stop_reason == 'max_tokens':
+                    is_truncated = True
+
+            # 新しいセッションに保存
+            session[f'claude_session_{new_session_id}'] = {
+                'prompt': session_data.get('prompt', ''),
+                'accumulated_text': accumulated_text,
+                'action': session_data.get('action', ''),
+                'project': session_data.get('project', ''),
+                'series': session_data.get('series', ''),
+                'current_content': session_data.get('current_content', ''),
+                'extra_context': session_data.get('extra_context', ''),
+                'is_truncated': is_truncated
+            }
+
+            yield f"data: {json.dumps({'done': True, 'session_id': new_session_id, 'is_truncated': is_truncated})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate_stream()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
 
 
 @app.route('/api/claude/context_debug', methods=['POST'])
@@ -3722,7 +4115,7 @@ def generate_volume_summary():
         try:
             with client.messages.stream(
                 model='claude-opus-4-6',
-                max_tokens=3000,
+                max_tokens=30000,
                 messages=[{'role': 'user', 'content': prompt}],
             ) as stream:
                 for text in stream.text_stream:

@@ -146,6 +146,17 @@
         <!-- ★ plot.md → chapter ファイル生成ボタン -->
         <div id="plot-to-chapters-section">
           <p class="section-label">本編を生成</p>
+
+          <!-- 文体選択 -->
+          <div id="writing-style-selector" style="margin-bottom: 10px;">
+            <label for="writing-style-select" style="display: block; margin-bottom: 4px; font-size: 12px; color: #666;">
+              文体:
+            </label>
+            <select id="writing-style-select" style="width: 100%; padding: 4px; font-size: 12px;">
+              <option value="standard">標準（読みやすい文章）</option>
+            </select>
+          </div>
+
           <button id="plot-to-chapters-btn" onclick="generateChapters()" title="plot.md の各章から chapter01.md, chapter02.md ... を生成します">
             📝 plot.md → chapters
           </button>
@@ -271,6 +282,7 @@
         <div id="claude-result-area">
           <div id="claude-result"></div>
           <button id="insert-result-btn" onclick="insertResult()" style="display:none">↑ エディタに挿入</button>
+          <button id="continue-result-btn" style="display:none; background-color: #f39c12;">続きを生成</button>
         </div>
         </div><!-- /claude-panel-body -->
       </div>
