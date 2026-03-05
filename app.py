@@ -19,6 +19,9 @@ SERIES_PREFIX = '_series_'
 # チャットセッション管理
 chat_sessions = {}
 
+# Claude 続き生成用セッション管理（メモリ内保存）
+claude_continue_sessions = {}
+
 # 文体定義
 WRITING_STYLES = {
     'standard': {
@@ -2473,6 +2476,7 @@ def generate_chapters():
     # ★ char_ctx / world_ctx は build_context_text で既に設定済み
 
     created_files = []
+    previous_chapter_text = ""  # 直前のchapterの内容を保持
 
     for filepath, title, body, is_ending, is_epilogue, part_num in chapters:
         if is_ending:
@@ -2488,6 +2492,22 @@ def generate_chapters():
         # シリーズ情報バナー（シリーズ所属の場合のみ）
         series_banner = f'【シリーズ】{series}\n' if series else ''
 
+        # 直前のchapterがある場合、その内容を要約して参照情報として追加
+        previous_chapter_context = ""
+        if previous_chapter_text:
+            # 直前のchapterを要約（最大2000文字に制限してコスト削減）
+            prev_text_trimmed = previous_chapter_text[:2000] + ('...' if len(previous_chapter_text) > 2000 else '')
+            previous_chapter_context = f"""
+【直前の章の内容（矛盾防止のため参照）】
+{prev_text_trimmed}
+
+【重要】直前の章で描写された内容と矛盾しないように執筆してください。特に以下の点に注意：
+- キャラクターの位置・状態・服装・持ち物
+- 時間経過や天候
+- 既に起きた出来事や会話の内容
+- 登場人物の感情や関係性の変化
+"""
+
         # プロンプト：階層コンテキスト対応（通常の小説形式で出力）
         prompt = f"""あなたはプロの小説家です。以下のプロットから{section_label}の本文を執筆してください。
 
@@ -2499,7 +2519,7 @@ def generate_chapters():
 
 【あらすじ（この巻）】
 {synopsis if synopsis else '（未設定）'}
-
+{previous_chapter_context}
 【この{section_label}のタイトル】
 {title}
 
@@ -2551,6 +2571,9 @@ def generate_chapters():
             'is_epilogue': is_epilogue,
             'part_num': part_num
         })
+
+        # 次の章のために、このchapterの内容を保存
+        previous_chapter_text = chapter_text
 
     return jsonify({'created': created_files, 'count': len(created_files)})
 
@@ -3535,6 +3558,7 @@ def generate_spoiler_free_synopsis():
             model='claude-opus-4-6',
             max_tokens=30000,
             messages=[{'role': 'user', 'content': prompt}],
+            timeout=600.0  # 10分のタイムアウト
         )
         synopsis = message.content[0].text
 
@@ -3846,8 +3870,8 @@ def generate():
                 if final_message.stop_reason == 'max_tokens':
                     is_truncated = True
 
-            # セッションに保存（続きから生成用）
-            session[f'claude_session_{session_id}'] = {
+            # セッションに保存（続きから生成用）- メモリ内保存
+            claude_continue_sessions[session_id] = {
                 'prompt': prompt,
                 'accumulated_text': accumulated_text,
                 'action': action,
@@ -3878,12 +3902,11 @@ def claude_continue():
     if not session_id:
         return jsonify({'error': 'セッションIDが指定されていません'}), 400
 
-    # セッションから前回の情報を取得
-    session_key = f'claude_session_{session_id}'
-    if session_key not in session:
+    # セッションから前回の情報を取得（メモリ内から）
+    if session_id not in claude_continue_sessions:
         return jsonify({'error': 'セッションが見つかりません'}), 404
 
-    session_data = session[session_key]
+    session_data = claude_continue_sessions[session_id]
     previous_text = session_data.get('accumulated_text', '')
 
     # 続きを生成するプロンプト
@@ -3919,8 +3942,8 @@ def claude_continue():
                 if final_message.stop_reason == 'max_tokens':
                     is_truncated = True
 
-            # 新しいセッションに保存
-            session[f'claude_session_{new_session_id}'] = {
+            # 新しいセッションに保存（メモリ内保存）
+            claude_continue_sessions[new_session_id] = {
                 'prompt': session_data.get('prompt', ''),
                 'accumulated_text': accumulated_text,
                 'action': session_data.get('action', ''),
