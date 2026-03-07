@@ -2325,6 +2325,31 @@ def generate_chapters():
     # ★ 階層コンテキストを構築（plot.md は章ごとのプロンプトで個別に渡すため除外）
     ctx_text, ctx_summary = build_context_text(project, series=series, include_plot=False)
 
+    # character.md を要約版で読み込む（外見情報を確実に含めるため）
+    character_summary_text = ""
+    character_path = os.path.join(project_dir, 'character.md')
+    if os.path.exists(character_path):
+        with open(character_path, 'r', encoding='utf-8') as f:
+            full_character_content = f.read()
+
+        # キャラクター情報を要約（全7項目を含む）
+        summary, relationships_and_family = summarize_existing_characters(full_character_content)
+
+        if relationships_and_family:
+            character_summary_text = f"""## キャラクター設定（全キャラクター・全項目要約版）
+
+### 人間関係・家族構成（最重要）
+{relationships_and_family}
+
+### 各キャラクターの詳細
+{summary}
+"""
+        elif summary:
+            character_summary_text = f"""## キャラクター設定（全キャラクター・全項目要約版）
+
+{summary}
+"""
+
     # 後続ロジックで char_ctx / world_ctx として使えるよう整形
     char_ctx = ''
     world_ctx = ''
@@ -2345,10 +2370,14 @@ def generate_chapters():
     elif m_world_single:
         world_ctx = m_world_single.group(1).strip()
 
-    # シリーズ聖典の内容はキャラ・世界観コンテキストに追記する
-    if ctx_text:
+    # character.mdの要約版を優先的に使用（外見情報を確実に反映）
+    if character_summary_text:
+        char_ctx = character_summary_text + ('\n\n---\n\n' + char_ctx if char_ctx else '')
+    elif ctx_text:
+        # シリーズ聖典の内容はキャラ・世界観コンテキストに追記する
         char_ctx = ctx_text + ('\n\n---\n\n' + char_ctx if char_ctx else '')
-        world_ctx = world_ctx  # world_ctx は ctx_text に含まれているので上書き不要
+
+    world_ctx = world_ctx  # world_ctx は ctx_text に含まれているので上書き不要
 
     # --- plot.md から章セクションを動的に抽出 ---
     import re
@@ -2536,11 +2565,12 @@ def generate_chapters():
 4. 情景描写・心理描写・会話文を自然に組み合わせ、プロットを豊かに肉付けすること
 5. 分量目安：3000〜5000字（プロットのボリュームに応じて調整）
 6. {writing_note}
-7. 【重要】マークダウン記法は一切使用しないこと（#見出し、**太字**、_斜体_などは使わない）
-8. 【重要】通常の小説形式で出力すること（Webサイトに直接投稿できる形式）
-9. 【重要】各段落の先頭は全角スペース1文字で字下げすること（例：「　彼は立ち上がった。」）
-10. 章タイトルは通常のテキストとして記述すること（例：「第一章　出会い」）
-11. 本文のみ出力（前置き・後置きの説明は一切不要）
+7. 【最重要】キャラクター設定の外見情報（目の色、髪型・髪色、身長、特徴的な外見など）を絶対に変更しないこと
+8. 【重要】マークダウン記法は一切使用しないこと（#見出し、**太字**、_斜体_などは使わない）
+9. 【重要】通常の小説形式で出力すること（Webサイトに直接投稿できる形式）
+10. 【重要】各段落の先頭は全角スペース1文字で字下げすること（例：「　彼は立ち上がった。」）
+11. 章タイトルは通常のテキストとして記述すること（例：「第一章　出会い」）
+12. 本文のみ出力（前置き・後置きの説明は一切不要）
 
 【確認】
 執筆前に、プロットに書かれた全ての要素（出来事、人物の行動、会話、場面転換など）をリストアップし、それらを全て本文に含めてください。"""
