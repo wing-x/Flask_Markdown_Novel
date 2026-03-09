@@ -733,6 +733,43 @@ async function generateCatchcopy() {
   }
 }
 
+async function generateTitle() {
+  if (!currentProject) {
+    showToast('先にプロジェクトを選択してください', '#a06020');
+    return;
+  }
+
+  const btn = document.getElementById('plot-to-title-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 生成中…';
+
+  try {
+    const res = await fetch('/api/claude/generate_title', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: currentProject, series: currentSeries })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      return;
+    }
+
+    // ファイルリストを更新して title.md を開く
+    await loadFiles();
+    await openFile('title.md');
+    showToast('📝 title.md を生成・保存しました ✅', '#1a7a40');
+
+  } catch (e) {
+    showToast('通信エラーが発生しました', '#c0392b');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '📝 タイトル案作成';
+  }
+}
+
 // ---- ★ draft → plot.md 生成 ----
 async function generatePlotFromDraft() {
   if (!currentProject) {

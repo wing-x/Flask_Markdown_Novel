@@ -2275,6 +2275,141 @@ def generate_catchcopy():
     return jsonify({'content': generated, 'saved': True})
 
 
+@app.route('/api/claude/generate_title', methods=['POST'])
+def generate_title():
+    """plot.md の内容を読み込み、魅力的なタイトル案を生成して title.md に保存する"""
+    data = request.json
+    project = data.get('project', '')
+    if not project:
+        return jsonify({'error': 'プロジェクトが指定されていません'}), 400
+
+    project_dir = os.path.join(BASE_DIR, project)
+
+    # plot.md を読み込む
+    plot_path = os.path.join(project_dir, 'plot.md')
+    if not os.path.exists(plot_path):
+        return jsonify({'error': 'plot.md がプロジェクト内に見つかりません'}), 404
+
+    with open(plot_path, 'r', encoding='utf-8') as f:
+        plot_content = f.read().strip()
+
+    if not plot_content or plot_content == '# プロット':
+        return jsonify({'error': 'plot.md に内容が書かれていません'}), 400
+
+    prompt = f"""以下のプロットを読み込み、この物語にふさわしいタイトルを複数提案してください。
+
+## プロット
+{plot_content}
+
+### 指示
+- 物語の核心となるテーマやコンセプトを捉えたタイトルを提案してください
+- 以下の3つのタイプでそれぞれ5案ずつ、計15案を提案してください：
+  1. **短編型（5〜10文字程度）**: シンプルで印象的なタイトル
+  2. **中編型（10〜20文字程度）**: 物語の内容を想起させるタイトル
+  3. **長編型（20〜30文字程度）**: ストーリーの魅力を具体的に表現するタイトル
+- それぞれのタイトルに簡単な解説（なぜこのタイトルを選んだか）を添えてください
+- 出力はマークダウン形式で、以下のフォーマットに従ってください：
+
+# タイトル案
+
+## 短編型（5〜10文字）
+
+### 案1
+[タイトル]
+
+**解説**: [解説文]
+
+### 案2
+[タイトル]
+
+**解説**: [解説文]
+
+### 案3
+[タイトル]
+
+**解説**: [解説文]
+
+### 案4
+[タイトル]
+
+**解説**: [解説文]
+
+### 案5
+[タイトル]
+
+**解説**: [解説文]
+
+## 中編型（10〜20文字）
+
+### 案1
+[タイトル]
+
+**解説**: [解説文]
+
+### 案2
+[タイトル]
+
+**解説**: [解説文]
+
+### 案3
+[タイトル]
+
+**解説**: [解説文]
+
+### 案4
+[タイトル]
+
+**解説**: [解説文]
+
+### 案5
+[タイトル]
+
+**解説**: [解説文]
+
+## 長編型（20〜30文字）
+
+### 案1
+[タイトル]
+
+**解説**: [解説文]
+
+### 案2
+[タイトル]
+
+**解説**: [解説文]
+
+### 案3
+[タイトル]
+
+**解説**: [解説文]
+
+### 案4
+[タイトル]
+
+**解説**: [解説文]
+
+### 案5
+[タイトル]
+
+**解説**: [解説文]"""
+
+    message = client.messages.create(
+        model='claude-opus-4-6',
+        max_tokens=30000,
+        messages=[{'role': 'user', 'content': prompt}],
+        timeout=600.0
+    )
+
+    generated = message.content[0].text.strip()
+
+    # title.md として保存
+    title_path = os.path.join(project_dir, 'title.md')
+    with open(title_path, 'w', encoding='utf-8') as f:
+        f.write(generated)
+
+    return jsonify({'content': generated, 'saved': True})
+
+
 def kanji_to_number(kanji_str, kanji_map):
     """漢数字を数値に変換する関数"""
     if '十' in kanji_str:

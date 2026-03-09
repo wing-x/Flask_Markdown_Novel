@@ -751,13 +751,15 @@ body {
 }
 
 /* ---- ★ plot.md → キャッチコピー ボタン ---- */
-#plot-to-catchcopy-section {
+#plot-to-catchcopy-section,
+#plot-to-title-section {
   display: flex;
   flex-direction: column;
   gap: 5px;
 }
 
-#plot-to-catchcopy-btn {
+#plot-to-catchcopy-btn,
+#plot-to-title-btn {
   width: 100%;
   padding: 9px 12px;
   background: #fffbf0;
@@ -774,12 +776,14 @@ body {
   gap: 6px;
   letter-spacing: 0.01em;
 }
-#plot-to-catchcopy-btn:hover:not(:disabled) {
+#plot-to-catchcopy-btn:hover:not(:disabled),
+#plot-to-title-btn:hover:not(:disabled) {
   background: #fff0d0;
   border-color: #e0a040;
   transform: translateX(2px);
 }
-#plot-to-catchcopy-btn:disabled {
+#plot-to-catchcopy-btn:disabled,
+#plot-to-title-btn:disabled {
   opacity: 0.55;
   cursor: default;
   transform: none;
