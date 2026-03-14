@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>小説執筆サポートエディタ</title>
-  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/style.css?v={{ cache_bust }}">
   <!-- CodeMirror -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/default.min.css">
@@ -236,7 +236,7 @@
           <!-- プロット展開案チャットモード切り替え -->
           <div style="margin-top: 10px;">
             <label style="display: flex; align-items: center; gap: 8px;">
-              <input type="checkbox" id="plot-chat-mode-checkbox" style="width: auto;">
+              <input type="checkbox" id="plot-chat-mode-checkbox" style="width: auto;" onchange="onPlotChatModeChange(this)">
               <span>💬 チャットで対話的に作成する</span>
             </label>
           </div>
@@ -279,7 +279,7 @@
           <!-- チャット生成モード切り替え -->
           <div style="margin-top: 10px;">
             <label style="display: flex; align-items: center; gap: 8px;">
-              <input type="checkbox" id="character-chat-mode-checkbox" style="width: auto;">
+              <input type="checkbox" id="character-chat-mode-checkbox" style="width: auto;" onchange="onCharacterChatModeChange(this)">
               <span>💬 チャットで対話的に生成する</span>
             </label>
           </div>
@@ -495,7 +495,7 @@
     </div>
   </div>
 
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/app.js?v={{ cache_bust }}"></script>
 
   <!-- ★ 伏線管理パネル（フルスクリーンモーダル） -->
   <div id="foreshadowing-panel" class="fs-modal" style="display:none;">

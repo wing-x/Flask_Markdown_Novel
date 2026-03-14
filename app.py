@@ -118,7 +118,7 @@ WRITING_STYLES = {
 # --- チャット共通ロジック ---
 
 def _chat_continue(session_id, user_message):
-    """チャットセッションを継続する内部関数"""
+    """チャットセッションを継続する内部関数（非ストリーミング）"""
     with session_lock:
         if not session_id or session_id not in chat_sessions:
             return error_response('無効なセッションIDです')
@@ -129,7 +129,6 @@ def _chat_continue(session_id, user_message):
         session['messages'].append({'role': 'user', 'content': user_message})
 
     try:
-        # モデル名はセッションから取得、デフォルトは claude-opus-4-6
         model = session.get('model', API_MODEL)
         message = client.messages.create(
             model=model,
@@ -144,6 +143,47 @@ def _chat_continue(session_id, user_message):
         return jsonify({'result': response_text})
     except Exception as e:
         return safe_error('Claude APIエラー', e)
+
+def _chat_continue_stream(session_id, user_message):
+    """チャットセッションを継続する内部関数（ストリーミング版）"""
+    from flask import stream_with_context, Response
+
+    with session_lock:
+        if not session_id or session_id not in chat_sessions:
+            return jsonify({'error': '無効なセッションIDです'}), 400
+        if not user_message:
+            return jsonify({'error': 'メッセージが空です'}), 400
+
+        session = chat_sessions[session_id]
+        session['messages'].append({'role': 'user', 'content': user_message})
+
+    def generate_stream():
+        try:
+            model = session.get('model', API_MODEL)
+            accumulated_text = ""
+
+            with client.messages.stream(
+                model=model,
+                max_tokens=API_MAX_TOKENS,
+                system=session['system_prompt'],
+                messages=session['messages']
+            ) as stream:
+                for text in stream.text_stream:
+                    accumulated_text += text
+                    yield f"data: {json.dumps({'chunk': text})}\n\n"
+
+            with session_lock:
+                session['messages'].append({'role': 'assistant', 'content': accumulated_text})
+
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': safe_error_message(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate_stream()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
 
 def _chat_finalize(session_id, result_key='result'):
     """チャットセッションを終了して最終結果を返す内部関数"""
@@ -655,7 +695,7 @@ SERIES_BIBLE_TEMPLATES = {
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', cache_bust=int(time.time()))
 
 @app.route('/api/writing_styles', methods=['GET'])
 def get_writing_styles():
@@ -2015,6 +2055,7 @@ def character_chat_start():
     character_name = data.get('character_name', '')
     character_role = data.get('character_role', '')  # 新規作成モード用
     mode = data.get('mode', 'from_draft')  # from_draft, new, edit_existing
+    user_context = data.get('context', '').strip()
 
     if not project:
         return error_response('プロジェクトが指定されていません')
@@ -2062,10 +2103,14 @@ def character_chat_start():
 
         system_prompt = f"あなたは小説のキャラクター設定を作成するアシスタントです。\nユーザーと対話しながら、{character_role}の詳細なプロファイルを作成します。\n\n{series_ctx_text}\n\n{plot_info_section}\n\n{character_info_section}\n\n## 役割\n1. {character_role}として魅力的なキャラクタープロファイルの初案を提示してください\n2. キャラクター名も含めて提案してください\n3. 既存キャラクターとの関係性（特に人間関係・家族構成）を**必ず**考慮してください\n4. ユーザー要望に応じて調整してください\n{PROMPTS['character_format']}"
         initial_user_message = f'{character_role}のキャラクター設定を提案してください。キャラクター名も含めて提案してください。'
+        if user_context:
+            initial_user_message += f'\n\n【作者からの指示・要望】\n{user_context}'
 
     elif mode == 'edit_existing':
         system_prompt = f"あなたは小説のキャラクター設定を修正・改善するアシスタントです。\nユーザーと対話しながら、「{character_name}」というキャラクターの設定を修正します。\n\n{series_ctx_text}\n\n## 既存キャラクター情報\n{existing_characters}\n\n## 役割\n1. 「{character_name}」の現在の設定を提示してください\n2. ユーザー要望に応じて調整してください\n3. 他のキャラクターとの整合性を保ってください\n{PROMPTS['character_format']}"
         initial_user_message = f'「{character_name}」の現在の設定を提示してください。'
+        if user_context:
+            initial_user_message += f'\n\n【作者からの指示・要望】\n{user_context}'
 
     else: # from_draft
         draft_content = read_text_file(get_project_path(project, 'plot_draft.md'), None)
@@ -2087,44 +2132,61 @@ def character_chat_start():
 
         system_prompt = f"あなたは小説のキャラクター設定を作成するアシスタントです。\nユーザーと対話しながら、「{character_name}」というキャラクターの詳細なプロファイルを作成します。\n\n{character_info_section}\n\n## シリーズ設定・プロット展開案\n{series_ctx_text}\n\n{draft_content}\n\n## 役割\n1. プロットから{character_name}の情報を抽出し、詳細な初案を提示してください\n2. 【最重要】既存キャラクターの人間関係・家族構成情報を**絶対に矛盾させないこと**（特に家族構成は厳守）\n3. 既存キャラクター一覧を参照し、名前の表記や設定との整合性を保つこと\n4. ユーザー要望に応じて調整してください\n{PROMPTS['character_format']}"
         initial_user_message = f'{character_name}のキャラクター設定を提案してください。'
-
-    # 初回のキャラクター情報を生成
-    initial_message = client.messages.create(
-        model=API_MODEL,
-        max_tokens=API_MAX_TOKENS,
-        system=system_prompt,
-        messages=[{'role': 'user', 'content': initial_user_message}],
-        timeout=API_TIMEOUT_DEFAULT
-    )
-    initial_response = initial_message.content[0].text.strip()
+        if user_context:
+            initial_user_message += f'\n\n【作者からの指示・要望】\n{user_context}'
 
     # セッションIDを生成
     session_name = character_name if character_name else character_role
     session_id = f"{project}_{session_name}_{int(time.time())}"
 
-    # セッション情報を保存
-    cleanup_sessions()
-    with session_lock:
-        chat_sessions[session_id] = {
-            'project': project,
-            'series': series,
-            'character_name': character_name or '新規キャラクター',
-            'system_prompt': system_prompt,
-            'messages': [
-                {'role': 'user', 'content': initial_user_message},
-                {'role': 'assistant', 'content': initial_response}
-            ],
-            'model': 'claude-opus-4-6',
-            '_created_at': time.time()
-        }
+    # ストリーミングで返す
+    from flask import stream_with_context, Response
 
-    return jsonify({'session_id': session_id, 'response': initial_response})
+    def generate_stream():
+        try:
+            accumulated_text = ""
+
+            with client.messages.stream(
+                model=API_MODEL,
+                max_tokens=API_MAX_TOKENS,
+                system=system_prompt,
+                messages=[{'role': 'user', 'content': initial_user_message}]
+            ) as stream:
+                for text in stream.text_stream:
+                    accumulated_text += text
+                    yield f"data: {json.dumps({'chunk': text})}\n\n"
+
+            # セッション情報を保存
+            cleanup_sessions()
+            with session_lock:
+                chat_sessions[session_id] = {
+                    'project': project,
+                    'series': series,
+                    'character_name': character_name or '新規キャラクター',
+                    'system_prompt': system_prompt,
+                    'messages': [
+                        {'role': 'user', 'content': initial_user_message},
+                        {'role': 'assistant', 'content': accumulated_text}
+                    ],
+                    'model': API_MODEL,
+                    '_created_at': time.time()
+                }
+
+            yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': safe_error_message(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate_stream()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
 
 @app.route('/api/claude/character_chat_continue', methods=['POST'])
 def character_chat_continue():
-    """キャラクター生成チャットを継続する"""
+    """キャラクター生成チャットを継続する（ストリーミング）"""
     data = request.json
-    return _chat_continue(data.get('session_id'), data.get('message'))
+    return _chat_continue_stream(data.get('session_id'), data.get('message'))
 
 @app.route('/api/claude/character_chat_finalize', methods=['POST'])
 def character_chat_finalize():
@@ -2145,6 +2207,7 @@ def plot_chat_start():
     project = data.get('project', '')
     series = data.get('series', '') or None
     length = data.get('length', '中編')
+    user_context = data.get('context', '').strip()
 
     if not project:
         return jsonify({'error': 'プロジェクトが指定されていません'}), 400
@@ -2206,7 +2269,10 @@ def plot_chat_start():
 6. 見出しの階層（#、##、###）、太字マーカー（**）、表形式などを正確に維持してください
 7. **目標執筆量「{length}」に適した文字数と章数で構成してください**"""
 
-    initial_user_message = f'{length}の小説のプロット展開案を提案してください。'
+    if user_context:
+        initial_user_message = f'{length}の小説のプロット展開案を提案してください。\n\n【作者からの指示・要望】\n{user_context}'
+    else:
+        initial_user_message = f'{length}の小説のプロット展開案を提案してください。'
 
     # ストリーミングで返す
     from flask import stream_with_context, Response
@@ -2239,7 +2305,7 @@ def plot_chat_start():
                         {'role': 'user', 'content': initial_user_message},
                         {'role': 'assistant', 'content': accumulated_text}
                     ],
-                    'model': 'claude-opus-4-6',
+                    'model': API_MODEL,
                     '_created_at': time.time()
                 }
 
@@ -2255,9 +2321,9 @@ def plot_chat_start():
 
 @app.route('/api/claude/plot_chat_continue', methods=['POST'])
 def plot_chat_continue():
-    """プロット展開案チャットを継続する"""
+    """プロット展開案チャットを継続する（ストリーミング）"""
     data = request.json
-    return _chat_continue(data.get('session_id'), data.get('message'))
+    return _chat_continue_stream(data.get('session_id'), data.get('message'))
 
 @app.route('/api/claude/plot_chat_finalize', methods=['POST'])
 def plot_chat_finalize():

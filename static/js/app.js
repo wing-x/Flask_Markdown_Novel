@@ -28,6 +28,10 @@ window.addEventListener('DOMContentLoaded', () => {
 
   editor.on('change', () => {
     updatePreview();
+    // ファイルが開かれている場合は保存ボタンを活性化
+    if (currentFile) {
+      document.getElementById('save-btn').disabled = false;
+    }
   });
 
   loadProjects();
@@ -2659,6 +2663,96 @@ function insertSynopsisToEditor() {
 }
 
 // ========================================
+// チャットモード チェックボックスハンドラ
+// ========================================
+
+// チャット未開始状態で保持するパラメータ（最初のメッセージ送信時にAPI開始用）
+let pendingChatParams = null;
+
+async function onPlotChatModeChange(checkbox) {
+  if (!checkbox.checked) return;
+
+  if (!currentProject) {
+    showToast('プロジェクトを選択してください', '#a03020');
+    checkbox.checked = false;
+    return;
+  }
+
+  const length = document.getElementById('plot-length-select').value;
+  const context = document.getElementById('claude-context').value.trim();
+
+  if (context) {
+    // 指示がある場合は即座にAPIを呼び出す
+    await startPlotChat(length);
+  } else {
+    // 指示が空の場合はチャットウィンドウだけ開く
+    pendingChatParams = { type: 'plot', length };
+    openEmptyChatModal(`プロット展開案 (${length})`);
+  }
+}
+
+async function onCharacterChatModeChange(checkbox) {
+  if (!checkbox.checked) return;
+
+  if (!currentProject) {
+    showToast('プロジェクトを選択してください', '#a03020');
+    checkbox.checked = false;
+    return;
+  }
+
+  const mode = document.getElementById('character-mode-select').value;
+  let characterName = null;
+  let characterRole = '';
+
+  if (mode === 'new') {
+    characterRole = document.getElementById('character-role-select').value;
+  } else if (mode === 'from_draft') {
+    characterName = document.getElementById('draft-character-select').value;
+    if (!characterName) {
+      showToast('キャラクターを選択してください', '#a03020');
+      checkbox.checked = false;
+      return;
+    }
+  } else if (mode === 'edit_existing') {
+    characterName = document.getElementById('existing-character-select').value;
+    if (!characterName) {
+      showToast('修正するキャラクターを選択してください', '#a03020');
+      checkbox.checked = false;
+      return;
+    }
+  }
+
+  const context = document.getElementById('claude-context').value.trim();
+
+  if (context) {
+    // 指示がある場合は即座にAPIを呼び出す
+    await startCharacterChat(characterName, mode, characterRole);
+  } else {
+    // 指示が空の場合はチャットウィンドウだけ開く
+    pendingChatParams = { type: 'character', characterName, mode, characterRole };
+    const label = characterName || '新規キャラクター';
+    openEmptyChatModal(`キャラクター対話生成: ${label}`);
+  }
+}
+
+function openEmptyChatModal(title) {
+  document.getElementById('chat-character-name').textContent = title;
+  const messagesArea = document.getElementById('character-chat-messages');
+  messagesArea.innerHTML = '';
+
+  // ガイドメッセージを表示
+  const guideDiv = document.createElement('div');
+  guideDiv.style.cssText = 'text-align: center; color: #888; padding: 40px 20px; font-size: 14px;';
+  guideDiv.textContent = 'メッセージを入力して送信すると、チャットが開始されます';
+  messagesArea.appendChild(guideDiv);
+
+  const modal = document.getElementById('character-chat-modal');
+  modal.style.display = 'block';
+  document.getElementById('character-chat-input').value = '';
+  document.getElementById('character-chat-input').focus();
+}
+
+// ========================================
 // キャラクターチャット機能
 // ========================================
 
@@ -2666,8 +2760,16 @@ let currentChatSessionId = null;
 
 async function startCharacterChat(characterName, mode = 'from_draft', characterRole = '') {
   console.log('startCharacterChat called with:', characterName, mode, characterRole);
-  console.log('currentProject:', currentProject);
-  console.log('currentSeries:', currentSeries);
+
+  // モーダルを開く
+  document.getElementById('chat-character-name').textContent = characterName || '新規キャラクター';
+  const messagesArea = document.getElementById('character-chat-messages');
+  messagesArea.innerHTML = '';
+
+  // モーダルを表示
+  const modal = document.getElementById('character-chat-modal');
+  modal.style.display = 'block';
+  document.getElementById('character-chat-input').value = '';
 
   try {
     const requestBody = {
@@ -2677,7 +2779,12 @@ async function startCharacterChat(characterName, mode = 'from_draft', characterR
       mode: mode
     };
 
-    // 新規作成モードの場合はロールを追加
+    // contextを追加
+    const chatContext = document.getElementById('claude-context').value.trim();
+    if (chatContext) {
+      requestBody.context = chatContext;
+    }
+
     if (mode === 'new') {
       requestBody.character_role = characterRole;
     }
@@ -2688,41 +2795,100 @@ async function startCharacterChat(characterName, mode = 'from_draft', characterR
       body: JSON.stringify(requestBody)
     });
 
-    console.log('Response status:', res.status);
-
     if (!res.ok) {
-      const data = await res.json();
-      console.error('Error response:', data);
-      showToast(data.error || 'エラーが発生しました', '#c0392b');
+      const errorData = await res.json();
+      showToast(errorData.error || 'エラーが発生しました', '#c0392b');
       return;
     }
 
-    const data = await res.json();
-    console.log('Success response:', data);
-    currentChatSessionId = data.session_id;
+    // SSEストリーミングでリアルタイム表示
+    const { sessionId } = await streamSSEToChat(res, messagesArea);
+
+    currentChatSessionId = sessionId;
     currentChatType = 'character';
-
-    // モーダルを開く
-    document.getElementById('chat-character-name').textContent = characterName || '新規キャラクター';
-    const messagesArea = document.getElementById('character-chat-messages');
-    messagesArea.innerHTML = '';
-
-    // 初回のアシスタントメッセージを追加
-    addChatMessage('assistant', data.response);
-
-    // モーダルを表示
-    const modal = document.getElementById('character-chat-modal');
-    console.log('Opening modal:', modal);
-    modal.style.display = 'block';
-    document.getElementById('character-chat-input').value = '';
     document.getElementById('character-chat-input').focus();
-
     showToast('チャットセッションを開始しました', '#1a7a40');
 
   } catch (e) {
     showToast('通信エラーが発生しました: ' + e.message, '#c0392b');
     console.error('Exception in startCharacterChat:', e);
   }
+}
+
+/**
+ * SSEレスポンスをチャットバブルにリアルタイム表示する共通ヘルパー
+ * @returns {Promise<{text: string, sessionId: string|null}>} 蓄積テキストとセッションID
+ */
+async function streamSSEToChat(response, messagesArea) {
+  // アシスタントメッセージの枠を作成
+  const messageDiv = document.createElement('div');
+  messageDiv.style.marginBottom = '15px';
+  messageDiv.innerHTML = `
+    <div style="text-align: left;">
+      <div style="font-size: 11px; color: #999; margin-bottom: 4px;">🤖 アシスタント</div>
+      <div class="chat-stream-bubble" style="display: inline-block; max-width: 85%; background: white; border: 1px solid #ddd; padding: 10px 15px; border-radius: 12px; text-align: left; word-wrap: break-word;"></div>
+    </div>
+  `;
+  messagesArea.appendChild(messageDiv);
+  const bubbleDiv = messageDiv.querySelector('.chat-stream-bubble');
+
+  let accumulated = '';
+  let sessionId = null;
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const result = await reader.read();
+    if (result.done) break;
+
+    buffer += decoder.decode(result.value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const payload = JSON.parse(line.slice(6));
+
+        if (payload.error) {
+          showToast('エラー: ' + payload.error, '#c0392b');
+          return { text: accumulated, sessionId: null };
+        }
+
+        if (payload.chunk) {
+          accumulated += payload.chunk;
+          bubbleDiv.innerHTML = sanitizeHtml(marked.parse(accumulated));
+          messagesArea.scrollTop = messagesArea.scrollHeight;
+        }
+
+        if (payload.done) {
+          sessionId = payload.session_id || null;
+        }
+      } catch (parseErr) { /* ignore */ }
+    }
+  }
+
+  // 残りバッファを処理
+  if (buffer.trim()) {
+    for (const line of buffer.split('\n')) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const payload = JSON.parse(line.slice(6));
+        if (payload.chunk) {
+          accumulated += payload.chunk;
+          bubbleDiv.innerHTML = sanitizeHtml(marked.parse(accumulated));
+          messagesArea.scrollTop = messagesArea.scrollHeight;
+        }
+        if (payload.done) {
+          sessionId = payload.session_id || null;
+        }
+      } catch (parseErr) { /* ignore */ }
+    }
+  }
+
+  return { text: accumulated, sessionId };
 }
 
 function addChatMessage(role, content) {
@@ -2763,8 +2929,6 @@ let currentChatType = null; // 'character' or 'plot'
 
 async function startPlotChat(length) {
   console.log('startPlotChat called with length:', length);
-  console.log('currentProject:', currentProject);
-  console.log('currentSeries:', currentSeries);
 
   // モーダルを開く
   document.getElementById('chat-character-name').textContent = `プロット展開案 (${length})`;
@@ -2776,14 +2940,6 @@ async function startPlotChat(length) {
   modal.style.display = 'block';
   document.getElementById('character-chat-input').value = '';
 
-  // ローディングメッセージを追加
-  const loadingDiv = document.createElement('div');
-  loadingDiv.className = 'chat-message assistant';
-  loadingDiv.innerHTML = '<div class="chat-bubble"><em>プロット展開案を生成中...</em></div>';
-  messagesArea.appendChild(loadingDiv);
-
-  let accumulated = '';
-
   try {
     const res = await fetch('/api/claude/plot_chat_start', {
       method: 'POST',
@@ -2791,101 +2947,28 @@ async function startPlotChat(length) {
       body: JSON.stringify({
         project: currentProject,
         series: currentSeries || undefined,
-        length: length
+        length: length,
+        context: document.getElementById('claude-context').value.trim()
       })
     });
 
-    console.log('Response status:', res.status);
-
     if (!res.ok) {
       const data = await res.json();
-      console.error('Error response:', data);
       showToast(data.error || 'エラーが発生しました', '#c0392b');
-      messagesArea.removeChild(loadingDiv);
       return;
     }
 
-    // ローディングメッセージを削除
-    messagesArea.removeChild(loadingDiv);
+    // SSEストリーミングでリアルタイム表示
+    const { sessionId } = await streamSSEToChat(res, messagesArea);
 
-    // アシスタントメッセージの枠を作成
-    const assistantDiv = document.createElement('div');
-    assistantDiv.className = 'chat-message assistant';
-    const bubbleDiv = document.createElement('div');
-    bubbleDiv.className = 'chat-bubble';
-    assistantDiv.appendChild(bubbleDiv);
-    messagesArea.appendChild(assistantDiv);
-
-    // SSE ストリーミング受信
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const result = await reader.read();
-      if (result.done) break;
-
-      buffer += decoder.decode(result.value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const payload = JSON.parse(line.slice(6));
-
-          if (payload.error) {
-            showToast('エラー: ' + payload.error, '#c0392b');
-            return;
-          }
-
-          if (payload.chunk) {
-            accumulated += payload.chunk;
-            // リアルタイムでMarkdownレンダリング
-            bubbleDiv.innerHTML = sanitizeHtml(marked.parse(accumulated));
-            messagesArea.scrollTop = messagesArea.scrollHeight;
-          }
-
-          if (payload.done) {
-            currentPlotChatSessionId = payload.session_id;
-            currentChatType = 'plot';
-            console.log('Session started. ID:', currentPlotChatSessionId);
-            document.getElementById('character-chat-input').focus();
-            showToast('チャットセッションを開始しました', '#1a7a40');
-          }
-        } catch (parseErr) { /* ignore */ }
-      }
-    }
-
-    // Process any remaining buffer content
-    if (buffer.trim()) {
-      const remainingLines = buffer.split('\n');
-      for (const line of remainingLines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const payload = JSON.parse(line.slice(6));
-            if (payload.chunk) {
-              accumulated += payload.chunk;
-              bubbleDiv.innerHTML = sanitizeHtml(marked.parse(accumulated));
-              messagesArea.scrollTop = messagesArea.scrollHeight;
-            }
-            if (payload.done) {
-              currentPlotChatSessionId = payload.session_id;
-              currentChatType = 'plot';
-              document.getElementById('character-chat-input').focus();
-              showToast('チャットセッションを開始しました', '#1a7a40');
-            }
-          } catch (parseErr) { /* ignore */ }
-        }
-      }
-    }
+    currentPlotChatSessionId = sessionId;
+    currentChatType = 'plot';
+    document.getElementById('character-chat-input').focus();
+    showToast('チャットセッションを開始しました', '#1a7a40');
 
   } catch (e) {
     showToast('通信エラーが発生しました: ' + e.message, '#c0392b');
     console.error('Exception in startPlotChat:', e);
-    if (messagesArea.contains(loadingDiv)) {
-      messagesArea.removeChild(loadingDiv);
-    }
   }
 }
 
@@ -2895,6 +2978,31 @@ async function sendChatMessage() {
 
   if (!message) {
     showToast('メッセージを入力してください', '#a06020');
+    return;
+  }
+
+  // 未開始状態（チェックボックスでウィンドウだけ開いた場合）: 最初のメッセージでセッション開始
+  if (pendingChatParams) {
+    const params = pendingChatParams;
+    pendingChatParams = null;
+
+    // ガイドメッセージをクリア
+    const messagesArea = document.getElementById('character-chat-messages');
+    messagesArea.innerHTML = '';
+
+    // ユーザーの入力をcontextとしてセッション開始
+    // 一時的にcontextテキストエリアにセットしてAPIに渡す
+    const originalContext = document.getElementById('claude-context').value;
+    document.getElementById('claude-context').value = message;
+    input.value = '';
+
+    if (params.type === 'plot') {
+      await startPlotChat(params.length);
+    } else {
+      await startCharacterChat(params.characterName, params.mode, params.characterRole);
+    }
+
+    document.getElementById('claude-context').value = originalContext;
     return;
   }
 
@@ -2912,11 +3020,14 @@ async function sendChatMessage() {
   addChatMessage('user', message);
   input.value = '';
 
-  // 送信ボタンを無効化
+  // 送信ボタン・入力を無効化
   const sendBtn = document.getElementById('character-chat-send-btn');
   const originalText = sendBtn.textContent;
   sendBtn.disabled = true;
-  sendBtn.textContent = '送信中...';
+  sendBtn.textContent = '生成中...';
+  input.disabled = true;
+
+  const messagesArea = document.getElementById('character-chat-messages');
 
   try {
     const endpoint = currentChatType === 'plot' ? '/api/claude/plot_chat_continue' : '/api/claude/character_chat_continue';
@@ -2937,10 +3048,8 @@ async function sendChatMessage() {
       return;
     }
 
-    const data = await res.json();
-
-    // アシスタントメッセージを表示
-    addChatMessage('assistant', data.response);
+    // SSEストリーミングでリアルタイム表示
+    await streamSSEToChat(res, messagesArea);
 
   } catch (e) {
     showToast('通信エラーが発生しました', '#c0392b');
@@ -2948,6 +3057,8 @@ async function sendChatMessage() {
   } finally {
     sendBtn.disabled = false;
     sendBtn.textContent = originalText;
+    input.disabled = false;
+    input.focus();
   }
 }
 
@@ -3048,7 +3159,12 @@ async function closeChatModal() {
   }
 
   currentChatType = null;
+  pendingChatParams = null;
   document.getElementById('character-chat-modal').style.display = 'none';
+
+  // チェックボックスをオフに戻す
+  document.getElementById('plot-chat-mode-checkbox').checked = false;
+  document.getElementById('character-chat-mode-checkbox').checked = false;
 }
 
 // Enterキーで送信
