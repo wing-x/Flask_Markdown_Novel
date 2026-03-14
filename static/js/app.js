@@ -54,15 +54,31 @@ function updatePreview() {
                           '</pre>';
   } else {
     // .mdファイルの場合はMarkdownレンダリング
-    previewEl.innerHTML = marked.parse(content);
+    previewEl.innerHTML = sanitizeHtml(marked.parse(content));
   }
 }
 
 // HTMLエスケープ用ヘルパー関数
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function sanitizeHtml(html) {
+  // script, iframe, object, embed, form タグを除去
+  return html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<iframe\b[^>]*>.*?<\/iframe>/gi, '')
+    .replace(/<object\b[^>]*>.*?<\/object>/gi, '')
+    .replace(/<embed\b[^>]*\/?>/gi, '')
+    .replace(/<form\b[^>]*>.*?<\/form>/gi, '')
+    .replace(/\bon\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '')
+    .replace(/javascript\s*:/gi, 'javascript_blocked:');
 }
 
 // ---- トースト通知 ----
@@ -97,31 +113,39 @@ async function loadWritingStyles() {
 
 // ---- プロジェクト ----
 async function loadProjects() {
-  const res = await fetch('/api/projects');
-  const projects = await res.json();
-  const sel = document.getElementById('project-select');
-  sel.innerHTML = '<option value="">-- プロジェクトを選択 --</option>';
-  projects.forEach(p => {
-    const opt = document.createElement('option');
-    opt.value = p;
-    opt.textContent = p;
-    sel.appendChild(opt);
-  });
+  try {
+    const res = await fetch('/api/projects');
+    const projects = await res.json();
+    const sel = document.getElementById('project-select');
+    sel.innerHTML = '<option value="">-- プロジェクトを選択 --</option>';
+    projects.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p;
+      sel.appendChild(opt);
+    });
+  } catch (e) {
+    console.error('プロジェクト一覧の読み込みに失敗しました:', e);
+  }
 }
 
 // ---- シリーズ管理 ----
 
 async function loadSeriesList() {
-  const res = await fetch('/api/series');
-  const seriesList = await res.json();
-  const sel = document.getElementById('series-select');
-  sel.innerHTML = '<option value="">-- シリーズを選択 --</option>';
-  seriesList.forEach(s => {
-    const opt = document.createElement('option');
-    opt.value = s;
-    opt.textContent = `📚 ${s}`;
-    sel.appendChild(opt);
-  });
+  try {
+    const res = await fetch('/api/series');
+    const seriesList = await res.json();
+    const sel = document.getElementById('series-select');
+    sel.innerHTML = '<option value="">-- シリーズを選択 --</option>';
+    seriesList.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s;
+      opt.textContent = `📚 ${s}`;
+      sel.appendChild(opt);
+    });
+  } catch (e) {
+    console.error('シリーズ一覧の読み込みに失敗しました:', e);
+  }
 }
 
 async function createSeries() {
@@ -236,7 +260,7 @@ async function onVolumeChange(projectName) {
 
   // 選択された巻のオプション情報を取得
   const sel = document.getElementById('volume-select');
-  const selectedOpt = sel.querySelector(`option[value="${projectName}"]`);
+  const selectedOpt = Array.from(sel.options).find(o => o.value === projectName);
   if (selectedOpt) {
     currentVolume = {
       order: selectedOpt.dataset.order,
@@ -343,7 +367,7 @@ async function loadProject(name) {
 // ---- ファイル一覧 ----
 async function loadFiles() {
   if (!currentProject) return;
-  const res = await fetch(`/api/projects/${currentProject}/files`);
+  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/files`);
   const structure = await res.json();
   const list = document.getElementById('file-list');
   list.innerHTML = '';
@@ -360,7 +384,7 @@ function renderFileTree(items, parentElement, depth) {
 
       const dirHeader = document.createElement('div');
       dirHeader.className = 'directory-header';
-      dirHeader.innerHTML = `<span class="dir-icon">📁</span> ${item.name}`;
+      dirHeader.innerHTML = `<span class="dir-icon">📁</span> ${escapeHtml(item.name)}`;
       dirHeader.onclick = () => toggleDirectory(dirLi);
       dirHeader.oncontextmenu = (e) => {
         e.preventDefault();
@@ -403,7 +427,7 @@ function renderFileTree(items, parentElement, depth) {
       const fileLi = document.createElement('li');
       fileLi.className = 'file-item';
       fileLi.style.paddingLeft = `${depth * 15}px`;
-      fileLi.innerHTML = `<span class="file-icon">📄</span> ${item.name}`;
+      fileLi.innerHTML = `<span class="file-icon">📄</span> ${escapeHtml(item.name)}`;
       fileLi.draggable = true;
       fileLi.dataset.path = item.path; // アクティブ表示用にパスを保存
       fileLi.onclick = (e) => {
@@ -456,7 +480,7 @@ async function quickCreateFile(filename) {
     showToast('先にプロジェクトを選択してください', '#a06020');
     return;
   }
-  const res = await fetch(`/api/projects/${currentProject}/files/${filename}`, {
+  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/files/${encodeURIComponent(filename)}`, {
     method: 'POST',
   });
   if (res.ok) {
@@ -481,7 +505,7 @@ async function createCustomFile() {
   if (!name) { showToast('ファイル名を入力してください', '#a03020'); return; }
   if (!name.endsWith('.md')) name += '.md';
 
-  const res = await fetch(`/api/projects/${currentProject}/files/${name}`, {
+  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/files/${encodeURIComponent(name)}`, {
     method: 'POST',
   });
   if (res.ok) {
@@ -495,7 +519,7 @@ async function createCustomFile() {
 // ---- ファイルを開く ----
 async function openFile(filename) {
   if (!currentProject) return;
-  const res = await fetch(`/api/projects/${currentProject}/files/${filename}`);
+  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/files/${encodeURIComponent(filename)}`);
   if (!res.ok) { showToast('ファイルを開けませんでした', '#a03020'); return; }
   const data = await res.json();
   currentFile = filename;
@@ -529,7 +553,7 @@ async function saveFile() {
     url = `/api/series/${encodeURIComponent(currentSeries)}/files/${currentFile}`;
   } else if (currentProject) {
     // 通常プロジェクトファイルの保存
-    url = `/api/projects/${currentProject}/files/${currentFile}`;
+    url = `/api/projects/${encodeURIComponent(currentProject)}/files/${encodeURIComponent(currentFile)}`;
   } else {
     return;
   }
@@ -834,6 +858,27 @@ async function generatePlotFromDraft() {
       }
     }
 
+    // Process any remaining buffer content
+    if (buffer.trim()) {
+      const remainingLines = buffer.split('\n');
+      for (const line of remainingLines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const payload = JSON.parse(line.slice(6));
+            if (payload.chunk) {
+              accumulated += payload.chunk;
+              btn.textContent = '⏳ 生成中… ' + accumulated.length + '字';
+            }
+            if (payload.done) {
+              await loadFiles();
+              await openFile('plot.md');
+              showToast('plot.md を生成・保存しました ✅', '#1a7a40');
+            }
+          } catch (parseErr) { /* ignore */ }
+        }
+      }
+    }
+
   } catch (e) {
     showToast('通信エラーが発生しました: ' + e.message, '#c0392b');
   } finally {
@@ -866,8 +911,12 @@ window.addEventListener('DOMContentLoaded', () => {
 // ---- Claude連携 ----
 function claudeAction(action) {
   selectedAction = action;
-  document.querySelectorAll('.claude-btn').forEach(btn => btn.classList.remove('selected'));
-  event.target.classList.add('selected');
+  document.querySelectorAll('.claude-btn').forEach(btn => {
+    btn.classList.remove('selected');
+    if (btn.textContent.trim() === action || btn.getAttribute('onclick')?.includes("'" + action + "'")) {
+      btn.classList.add('selected');
+    }
+  });
   document.getElementById('claude-run-btn').disabled = !currentProject;
 
   // プロット展開案の場合のみ執筆量選択UIを表示
@@ -1198,6 +1247,35 @@ async function runClaudeAction() {
       }
     }
 
+    // Process any remaining buffer content
+    if (buffer.trim()) {
+      const remainingLines = buffer.split('\n');
+      for (const line of remainingLines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const payload = JSON.parse(line.slice(6));
+            if (payload.chunk) {
+              accumulated += payload.chunk;
+              resultEl.textContent = accumulated;
+              btn.textContent = '生成中… ' + accumulated.length + '字';
+            }
+            if (payload.done) {
+              claudeResult = accumulated;
+              currentSessionId = payload.session_id;
+              document.getElementById('insert-result-btn').style.display = 'inline-block';
+              if (payload.is_truncated) {
+                const continueBtn = document.getElementById('continue-result-btn');
+                continueBtn.style.display = 'inline-block';
+                continueBtn.onclick = () => continueClaude(currentSessionId);
+              }
+              btn.disabled = false;
+              btn.textContent = '実行';
+            }
+          } catch (parseErr) { /* ignore */ }
+        }
+      }
+    }
+
   } catch (e) {
     showToast('通信エラーが発生しました: ' + e.message, '#c0392b');
     btn.disabled = false;
@@ -1279,6 +1357,35 @@ async function continueClaude(sessionId) {
       }
     }
 
+    // Process any remaining buffer content
+    if (buffer.trim()) {
+      const remainingLines = buffer.split('\n');
+      for (const line of remainingLines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const payload = JSON.parse(line.slice(6));
+            if (payload.chunk) {
+              accumulated += payload.chunk;
+              claudeResult = accumulated;
+              resultEl.textContent = accumulated;
+              btn.textContent = '生成中… ' + accumulated.length + '字';
+            }
+            if (payload.done) {
+              currentSessionId = payload.session_id;
+              if (payload.is_truncated) {
+                btn.onclick = () => continueClaude(currentSessionId);
+                btn.disabled = false;
+                btn.textContent = '続きを生成';
+              } else {
+                btn.style.display = 'none';
+                showToast('生成完了！', '#1a7a40');
+              }
+            }
+          } catch (parseErr) { /* ignore */ }
+        }
+      }
+    }
+
   } catch (e) {
     showToast('通信エラーが発生しました: ' + e.message, '#c0392b');
     btn.disabled = false;
@@ -1337,7 +1444,7 @@ async function createDirectory() {
     return;
   }
 
-  const res = await fetch(`/api/projects/${currentProject}/directories`, {
+  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/directories`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: name })
@@ -1373,7 +1480,7 @@ async function confirmRename() {
   pathParts[pathParts.length - 1] = newName;
   const newPath = pathParts.join('/');
 
-  const res = await fetch(`/api/projects/${currentProject}/rename`, {
+  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/rename`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ old_path: contextMenuTarget, new_path: newPath })
@@ -1411,7 +1518,7 @@ async function confirmMove() {
   const fileName = contextMenuTarget.split('/').pop();
   const destPath = destDir.endsWith('/') ? destDir + fileName : destDir + '/' + fileName;
 
-  const res = await fetch(`/api/projects/${currentProject}/move`, {
+  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/move`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source: contextMenuTarget, destination: destPath })
@@ -1442,7 +1549,7 @@ function deleteFileDialog() {
 async function confirmDelete() {
   if (!currentProject || !contextMenuTarget) return;
 
-  const res = await fetch(`/api/projects/${currentProject}/files/${contextMenuTarget}`, {
+  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/files/${encodeURIComponent(contextMenuTarget)}`, {
     method: 'DELETE'
   });
 
@@ -1479,7 +1586,7 @@ async function moveFileDragDrop(sourcePath, destDir) {
     return;
   }
 
-  const res = await fetch(`/api/projects/${currentProject}/move`, {
+  const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/move`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source: sourcePath, destination: destPath })
@@ -1616,7 +1723,7 @@ function renderForeshadowingCard(item) {
   const badgeClass = `fs-badge fs-badge-status-${item.status}`;
 
   const chars = (item.related_characters || []).length > 0
-    ? `<div class="fs-card-characters">👤 ${item.related_characters.join('、')}</div>`
+    ? `<div class="fs-card-characters">👤 ${escapeHtml(item.related_characters.join('、'))}</div>`
     : '';
 
   const notes = item.notes
@@ -1650,13 +1757,6 @@ function renderForeshadowingCard(item) {
     </div>`;
 }
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 // ---- フォーム開閉 ----
 
@@ -1868,6 +1968,29 @@ async function generateVolumeSummary() {
       }
     }
 
+    // Process any remaining buffer content
+    if (buffer.trim()) {
+      const remainingLines = buffer.split('\n');
+      for (const line of remainingLines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const payload = JSON.parse(line.slice(6));
+            if (payload.chunk) {
+              accumulated += payload.chunk;
+              barWidth = Math.min(90, barWidth + 0.8);
+              bar.style.width = barWidth + '%';
+              label.textContent = '生成中… ' + accumulated.length + ' 字';
+            }
+            if (payload.done) {
+              bar.style.width = '100%';
+              label.textContent = '✅ 完了 — ' + accumulated.length + ' 字のサマリーを保存しました';
+              await openSeriesBibleFile('series_summary.md');
+            }
+          } catch (parseErr) { /* ignore */ }
+        }
+      }
+    }
+
   } catch (e) {
     showToast('通信エラー: ' + e.message, '#c0392b');
   } finally {
@@ -1954,7 +2077,7 @@ async function populateCcTargetFiles() {
   if (!currentProject) return;
 
   try {
-    const res = await fetch('/api/projects/' + currentProject + '/files');
+    const res = await fetch('/api/projects/' + encodeURIComponent(currentProject) + '/files');
     if (!res.ok) return;
     const structure = await res.json();
 
@@ -2068,7 +2191,7 @@ async function runConsistencyCheck() {
             barLabel.textContent = '分析中… ' + accumulated.length + ' 字';
 
             // リアルタイムでMarkdownレンダリング
-            resultBody.innerHTML = marked.parse(accumulated);
+            resultBody.innerHTML = sanitizeHtml(marked.parse(accumulated));
             resultBody.style.display = 'block';
           }
 
@@ -2084,6 +2207,34 @@ async function runConsistencyCheck() {
             }, 2000);
           }
         } catch (parseErr) { /* ignore */ }
+      }
+    }
+
+    // Process any remaining buffer content
+    if (buffer.trim()) {
+      const remainingLines = buffer.split('\n');
+      for (const line of remainingLines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const payload = JSON.parse(line.slice(6));
+            if (payload.chunk) {
+              accumulated += payload.chunk;
+              barWidth = Math.min(90, barWidth + 0.6);
+              bar.style.width = barWidth + '%';
+              barLabel.textContent = '分析中… ' + accumulated.length + ' 字';
+              resultBody.innerHTML = sanitizeHtml(marked.parse(accumulated));
+              resultBody.style.display = 'block';
+            }
+            if (payload.done) {
+              bar.style.width = '100%';
+              barLabel.textContent = '✅ チェック完了';
+              parseCcSummary(accumulated);
+              setTimeout(function() {
+                progress.style.display = 'none';
+              }, 2000);
+            }
+          } catch (parseErr) { /* ignore */ }
+        }
       }
     }
 
@@ -2476,7 +2627,7 @@ async function generateSpoilerFreeSynopsis() {
     synopsisResultText = data.synopsis;
 
     // Markdownレンダリング
-    resultDiv.innerHTML = marked.parse(synopsisResultText);
+    resultDiv.innerHTML = sanitizeHtml(marked.parse(synopsisResultText));
     resultArea.style.display = 'block';
 
     showToast('✅ あらすじを生成しました', '#27ae60');
@@ -2602,11 +2753,6 @@ function addChatMessage(role, content) {
   messagesArea.scrollTop = messagesArea.scrollHeight;
 }
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
 
 // ========================================
 // プロット展開案チャット機能
@@ -2696,7 +2842,7 @@ async function startPlotChat(length) {
           if (payload.chunk) {
             accumulated += payload.chunk;
             // リアルタイムでMarkdownレンダリング
-            bubbleDiv.innerHTML = marked.parse(accumulated);
+            bubbleDiv.innerHTML = sanitizeHtml(marked.parse(accumulated));
             messagesArea.scrollTop = messagesArea.scrollHeight;
           }
 
@@ -2708,6 +2854,29 @@ async function startPlotChat(length) {
             showToast('チャットセッションを開始しました', '#1a7a40');
           }
         } catch (parseErr) { /* ignore */ }
+      }
+    }
+
+    // Process any remaining buffer content
+    if (buffer.trim()) {
+      const remainingLines = buffer.split('\n');
+      for (const line of remainingLines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const payload = JSON.parse(line.slice(6));
+            if (payload.chunk) {
+              accumulated += payload.chunk;
+              bubbleDiv.innerHTML = sanitizeHtml(marked.parse(accumulated));
+              messagesArea.scrollTop = messagesArea.scrollHeight;
+            }
+            if (payload.done) {
+              currentPlotChatSessionId = payload.session_id;
+              currentChatType = 'plot';
+              document.getElementById('character-chat-input').focus();
+              showToast('チャットセッションを開始しました', '#1a7a40');
+            }
+          } catch (parseErr) { /* ignore */ }
+        }
       }
     }
 
@@ -2830,6 +2999,9 @@ async function finalizeChat() {
 
     const itemType = currentChatType === 'plot' ? 'プロット案' : 'キャラクター情報';
     showToast(`${itemType}を確定しました`, '#1a7a40');
+    // Clear session IDs before closing to prevent cancel request
+    currentChatSessionId = null;
+    currentPlotChatSessionId = null;
     closeChatModal();
 
   } catch (e) {

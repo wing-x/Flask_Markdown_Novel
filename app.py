@@ -3,9 +3,12 @@ import anthropic
 import os
 import json
 import shutil
+import re
+import time
+import threading
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key-here-change-in-production')
+app.secret_key = os.environ.get('FLASK_SECRET_KEY') or os.urandom(32).hex()
 
 # プロジェクトのベースディレクトリ
 BASE_DIR = os.path.join(os.path.dirname(__file__), 'projects')
@@ -21,6 +24,62 @@ chat_sessions = {}
 
 # Claude 続き生成用セッション管理（メモリ内保存）
 claude_continue_sessions = {}
+
+# セッション管理定数
+SESSION_TTL = 3600  # 1時間
+SESSION_MAX = 100   # 最大セッション数
+
+# === Claude API設定（一元管理） ===
+API_MODEL = 'claude-opus-4-6'
+API_MAX_TOKENS = 30000          # 出力トークン上限
+API_TIMEOUT_SHORT = 60.0        # 短時間処理（キャッチコピー等）
+API_TIMEOUT_DEFAULT = 600.0     # 標準処理（プロット生成等）
+API_TIMEOUT_LONG = 1800.0       # 長時間処理（章生成・修正等）
+API_TIMEOUT_CHAT = 120.0        # チャット応答
+
+# === コンテキスト文字数制限（1Mトークン対応） ===
+# 日本語テキスト: 約1文字 ≒ 1.5トークン
+# 1Mトークン ≒ 約660,000文字まで入力可能
+# 各セクションの合計がモデルの入力上限を超えないよう配分
+CONTEXT_SERIES_TOTAL = 200000     # シリーズ聖典全体 (旧: 20,000)
+CONTEXT_VOLUME_TOTAL = 100000     # 巻固有設定全体 (旧: 10,000)
+CONTEXT_PLOT = 50000              # プロット (旧: 4,000)
+CONTEXT_PER_FILE = 30000          # 個別設定ファイル (旧: 3,000)
+CONTEXT_CHAPTER = 10000           # 章サンプル (旧: 2,000)
+CONTEXT_SYNOPSIS = 5000           # あらすじ (旧: 1,000)
+CONTEXT_PREV_CHAPTER = 20000     # 直前の章参照 (旧: 2,000)
+
+# セッションアクセス用ロック
+session_lock = threading.Lock()
+
+def cleanup_sessions():
+    """期限切れセッションを削除する"""
+    now = time.time()
+    for store in [chat_sessions, claude_continue_sessions]:
+        expired = [k for k, v in store.items() if now - v.get('_created_at', 0) > SESSION_TTL]
+        for k in expired:
+            del store[k]
+    # 最大数を超えた場合、古いものから削除
+    for store in [chat_sessions, claude_continue_sessions]:
+        if len(store) > SESSION_MAX:
+            sorted_keys = sorted(store.keys(), key=lambda k: store[k].get('_created_at', 0))
+            for k in sorted_keys[:len(store) - SESSION_MAX]:
+                del store[k]
+
+def safe_path(*parts):
+    """安全なパスを生成し、BASE_DIR外へのアクセスを防止する"""
+    path = os.path.realpath(os.path.join(BASE_DIR, *parts))
+    base = os.path.realpath(BASE_DIR)
+    if not path.startswith(base + os.sep) and path != base:
+        return None
+    return path
+
+def validate_path(*parts):
+    """パスを検証し、不正な場合はエラーレスポンスを返す"""
+    path = safe_path(*parts)
+    if path is None:
+        return None, error_response('不正なパスです', 400)
+    return path, None
 
 # 文体定義
 WRITING_STYLES = {
@@ -60,46 +119,49 @@ WRITING_STYLES = {
 
 def _chat_continue(session_id, user_message):
     """チャットセッションを継続する内部関数"""
-    if not session_id or session_id not in chat_sessions:
-        return error_response('無効なセッションIDです')
-    if not user_message:
-        return error_response('メッセージが空です')
+    with session_lock:
+        if not session_id or session_id not in chat_sessions:
+            return error_response('無効なセッションIDです')
+        if not user_message:
+            return error_response('メッセージが空です')
 
-    session = chat_sessions[session_id]
-    session['messages'].append({'role': 'user', 'content': user_message})
+        session = chat_sessions[session_id]
+        session['messages'].append({'role': 'user', 'content': user_message})
 
     try:
         # モデル名はセッションから取得、デフォルトは claude-opus-4-6
-        model = session.get('model', 'claude-opus-4-6')
+        model = session.get('model', API_MODEL)
         message = client.messages.create(
             model=model,
-            max_tokens=30000,
+            max_tokens=API_MAX_TOKENS,
             system=session['system_prompt'],
             messages=session['messages'],
-            timeout=120.0
+            timeout=API_TIMEOUT_CHAT
         )
         response_text = message.content[0].text
-        session['messages'].append({'role': 'assistant', 'content': response_text})
+        with session_lock:
+            session['messages'].append({'role': 'assistant', 'content': response_text})
         return jsonify({'result': response_text})
     except Exception as e:
-        return error_response(f'Claude APIエラー: {str(e)}', 500)
+        return safe_error('Claude APIエラー', e)
 
 def _chat_finalize(session_id, result_key='result'):
     """チャットセッションを終了して最終結果を返す内部関数"""
-    if not session_id or session_id not in chat_sessions:
-        return error_response('無効なセッションIDです')
+    with session_lock:
+        if not session_id or session_id not in chat_sessions:
+            return error_response('無効なセッションIDです')
 
-    session = chat_sessions[session_id]
-    final_info = None
-    for msg in reversed(session['messages']):
-        if msg['role'] == 'assistant':
-            final_info = msg['content']
-            break
+        session = chat_sessions[session_id]
+        final_info = None
+        for msg in reversed(session['messages']):
+            if msg['role'] == 'assistant':
+                final_info = msg['content']
+                break
 
-    if not final_info:
-        return error_response('生成された情報が見つかりません')
+        if not final_info:
+            return error_response('生成された情報が見つかりません')
 
-    del chat_sessions[session_id]
+        del chat_sessions[session_id]
     return jsonify({
         result_key: final_info,
         'message': '情報を確定しました'
@@ -107,16 +169,17 @@ def _chat_finalize(session_id, result_key='result'):
 
 def _chat_cancel(session_id):
     """チャットセッションをキャンセルする内部関数"""
-    if not session_id or session_id not in chat_sessions:
-        return error_response('無効なセッションIDです')
-    del chat_sessions[session_id]
+    with session_lock:
+        if not session_id or session_id not in chat_sessions:
+            return error_response('無効なセッションIDです')
+        del chat_sessions[session_id]
     return jsonify({'message': 'チャットセッションをキャンセルしました'})
 
 # --- ユーティリティ関数 ---
 
 def get_project_path(project, *paths):
-    """プロジェクト内の絶対パスを生成する"""
-    return os.path.join(BASE_DIR, project, *paths)
+    """プロジェクト内の絶対パスを生成する（安全性チェック付き）"""
+    return safe_path(project, *paths)
 
 def read_text_file(path, default=''):
     """テキストファイルをUTF-8で読み込む"""
@@ -149,7 +212,6 @@ def summarize_existing_characters(character_md_content):
     Returns:
         tuple: (要約テキスト, 人間関係＋家族構成テキスト)
     """
-    import re
 
     if not character_md_content:
         return '', ''
@@ -363,8 +425,25 @@ def error_response(message, status_code=400):
     """標準エラーレスポンスを生成する"""
     return jsonify({'error': message}), status_code
 
+def safe_error(prefix, e):
+    """エラーメッセージを安全に返す（内部パス等を隠す）"""
+    # ファイルパスや内部情報を含む可能性のある詳細は省略
+    msg = str(e)
+    # 内部パスを除去
+    if BASE_DIR in msg or '\\' in msg or '/home/' in msg or '/usr/' in msg:
+        return error_response(f'{prefix}: 内部エラーが発生しました', 500)
+    return error_response(f'{prefix}: {msg}', 500)
+
+def safe_error_message(e):
+    """ストリーミング用の安全なエラーメッセージを生成する"""
+    msg = str(e)
+    if BASE_DIR in msg or '\\' in msg or '/home/' in msg or '/usr/' in msg:
+        return '内部エラーが発生しました'
+    return msg
+
 def get_series_dir(series_name):
-    return os.path.join(BASE_DIR, SERIES_PREFIX + series_name)
+    path = safe_path(SERIES_PREFIX + series_name)
+    return path if path else os.path.join(BASE_DIR, SERIES_PREFIX + series_name)
 
 def get_series_meta(series_name):
     meta_path = os.path.join(get_series_dir(series_name), '_meta.json')
@@ -624,7 +703,9 @@ def create_project():
 
 @app.route('/api/projects/<project>/files', methods=['GET'])
 def list_files(project):
-    project_dir = get_project_path(project)
+    project_dir, err = validate_path(project)
+    if err:
+        return err
     if not os.path.exists(project_dir):
         return error_response('プロジェクトが見つかりません', 404)
 
@@ -657,7 +738,9 @@ def list_files(project):
 
 @app.route('/api/projects/<project>/files/<path:filename>', methods=['GET'])
 def get_file(project, filename):
-    filepath = get_project_path(project, filename)
+    filepath, err = validate_path(project, filename)
+    if err:
+        return err
     content = read_text_file(filepath, None)
     if content is None:
         return error_response('ファイルが見つかりません', 404)
@@ -666,7 +749,9 @@ def get_file(project, filename):
 
 @app.route('/api/projects/<project>/files/<path:filename>', methods=['PUT'])
 def save_file(project, filename):
-    filepath = get_project_path(project, filename)
+    filepath, err = validate_path(project, filename)
+    if err:
+        return err
     data = request.json
     content = data.get('content', '')
 
@@ -676,7 +761,9 @@ def save_file(project, filename):
 @app.route('/api/projects/<project>/files/<path:filename>', methods=['POST'])
 def create_file(project, filename):
     """新規ファイルを作成（既存の場合はそのまま返す）"""
-    filepath = get_project_path(project, filename)
+    filepath, err = validate_path(project, filename)
+    if err:
+        return err
 
     created = False
     if not os.path.exists(filepath):
@@ -691,9 +778,11 @@ def create_file(project, filename):
 @app.route('/api/projects/<project>/files/<path:filename>', methods=['DELETE'])
 def delete_file(project, filename):
     """ファイルを削除"""
-    filepath = os.path.join(BASE_DIR, project, filename)
+    filepath, err = validate_path(project, filename)
+    if err:
+        return err
     if not os.path.exists(filepath):
-        return jsonify({'error': 'ファイルが見つかりません'}), 404
+        return error_response('ファイルが見つかりません', 404)
 
     try:
         if os.path.isdir(filepath):
@@ -702,7 +791,7 @@ def delete_file(project, filename):
             os.remove(filepath)
         return jsonify({'success': True})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return safe_error('ファイル削除エラー', e)
 
 @app.route('/api/projects/<project>/rename', methods=['POST'])
 def rename_file(project):
@@ -712,16 +801,20 @@ def rename_file(project):
     new_path = data.get('new_path', '')
 
     if not old_path or not new_path:
-        return jsonify({'error': 'パスが指定されていません'}), 400
+        return error_response('パスが指定されていません', 400)
 
-    old_filepath = os.path.join(BASE_DIR, project, old_path)
-    new_filepath = os.path.join(BASE_DIR, project, new_path)
+    old_filepath, err = validate_path(project, old_path)
+    if err:
+        return err
+    new_filepath, err = validate_path(project, new_path)
+    if err:
+        return err
 
     if not os.path.exists(old_filepath):
-        return jsonify({'error': '元のファイルが見つかりません'}), 404
+        return error_response('元のファイルが見つかりません', 404)
 
     if os.path.exists(new_filepath):
-        return jsonify({'error': '同名のファイルが既に存在します'}), 400
+        return error_response('同名のファイルが既に存在します', 400)
 
     try:
         # 新しいパスのディレクトリが存在しない場合は作成
@@ -732,7 +825,7 @@ def rename_file(project):
         os.rename(old_filepath, new_filepath)
         return jsonify({'success': True, 'new_path': new_path})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return safe_error('リネームエラー', e)
 
 @app.route('/api/projects/<project>/directories', methods=['POST'])
 def create_directory(project):
@@ -741,18 +834,20 @@ def create_directory(project):
     dir_path = data.get('path', '')
 
     if not dir_path:
-        return jsonify({'error': 'パスが指定されていません'}), 400
+        return error_response('パスが指定されていません', 400)
 
-    full_path = os.path.join(BASE_DIR, project, dir_path)
+    full_path, err = validate_path(project, dir_path)
+    if err:
+        return err
 
     if os.path.exists(full_path):
-        return jsonify({'error': '同名のディレクトリが既に存在します'}), 400
+        return error_response('同名のディレクトリが既に存在します', 400)
 
     try:
         os.makedirs(full_path, exist_ok=True)
         return jsonify({'success': True, 'path': dir_path})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return safe_error('ディレクトリ作成エラー', e)
 
 @app.route('/api/projects/<project>/move', methods=['POST'])
 def move_file(project):
@@ -762,16 +857,20 @@ def move_file(project):
     dest_path = data.get('destination', '')
 
     if not source_path or not dest_path:
-        return jsonify({'error': 'パスが指定されていません'}), 400
+        return error_response('パスが指定されていません', 400)
 
-    source_filepath = os.path.join(BASE_DIR, project, source_path)
-    dest_filepath = os.path.join(BASE_DIR, project, dest_path)
+    source_filepath, err = validate_path(project, source_path)
+    if err:
+        return err
+    dest_filepath, err = validate_path(project, dest_path)
+    if err:
+        return err
 
     if not os.path.exists(source_filepath):
-        return jsonify({'error': '元のファイルが見つかりません'}), 404
+        return error_response('元のファイルが見つかりません', 404)
 
     if os.path.exists(dest_filepath):
-        return jsonify({'error': '移動先に同名のファイルが既に存在します'}), 400
+        return error_response('移動先に同名のファイルが既に存在します', 400)
 
     try:
         # 移動先のディレクトリが存在しない場合は作成
@@ -782,7 +881,7 @@ def move_file(project):
         os.rename(source_filepath, dest_filepath)
         return jsonify({'success': True, 'new_path': dest_path})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return safe_error('ファイル移動エラー', e)
 
 def get_template(filename):
     """ファイル名に応じたテンプレートを返す"""
@@ -939,13 +1038,15 @@ def create_volume(series):
 @app.route('/api/series/<series>/files/<filename>', methods=['GET'])
 def get_series_file(series, filename):
     """シリーズ聖典ファイルを取得"""
+    fpath, err = validate_path(SERIES_PREFIX + series, filename)
+    if err:
+        return err
     series_dir = get_series_dir(series)
     if not os.path.exists(series_dir):
-        return jsonify({'error': 'シリーズが見つかりません'}), 404
+        return error_response('シリーズが見つかりません', 404)
 
-    fpath = os.path.join(series_dir, filename)
     if not os.path.exists(fpath):
-        return jsonify({'error': 'ファイルが見つかりません'}), 404
+        return error_response('ファイルが見つかりません', 404)
 
     with open(fpath, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -954,14 +1055,16 @@ def get_series_file(series, filename):
 @app.route('/api/series/<series>/files/<filename>', methods=['PUT'])
 def save_series_file(series, filename):
     """シリーズ聖典ファイルを保存"""
+    fpath, err = validate_path(SERIES_PREFIX + series, filename)
+    if err:
+        return err
     series_dir = get_series_dir(series)
     if not os.path.exists(series_dir):
-        return jsonify({'error': 'シリーズが見つかりません'}), 404
+        return error_response('シリーズが見つかりません', 404)
 
     data = request.json
     content = data.get('content', '')
 
-    fpath = os.path.join(series_dir, filename)
     with open(fpath, 'w', encoding='utf-8') as f:
         f.write(content)
     return jsonify({'success': True})
@@ -969,11 +1072,12 @@ def save_series_file(series, filename):
 @app.route('/api/series/<series>/files/<filename>', methods=['POST'])
 def create_series_file(series, filename):
     """シリーズ聖典ファイルを新規作成（存在する場合はそのまま返す）"""
+    fpath, err = validate_path(SERIES_PREFIX + series, filename)
+    if err:
+        return err
     series_dir = get_series_dir(series)
     if not os.path.exists(series_dir):
-        return jsonify({'error': 'シリーズが見つかりません'}), 404
-
-    fpath = os.path.join(series_dir, filename)
+        return error_response('シリーズが見つかりません', 404)
     created = False
     if not os.path.exists(fpath):
         template = SERIES_BIBLE_TEMPLATES.get(filename, f'# {filename.replace(".md", "")}\n\n')
@@ -996,7 +1100,10 @@ def load_foreshadowing(series_name):
     if not os.path.exists(fpath):
         return {}
     with open(fpath, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            return {}
 
 def save_foreshadowing(series_name, data):
     fpath = get_foreshadowing_path(series_name)
@@ -1106,7 +1213,6 @@ def detect_series_from_project(project_name):
     命名規則: {series}_vol{N}_{title} → series名を返す。
     シリーズに属さない場合は None を返す。
     """
-    import re
     # _vol01_ / _vol1_ 形式を検出
     m = re.match(r'^(.+?)_vol\d+_', project_name)
     if m:
@@ -1127,7 +1233,7 @@ def _read_and_trim(fpath, char_limit):
     return content
 
 
-def get_series_context(series_name, char_limit_total=20000):
+def get_series_context(series_name, char_limit_total=CONTEXT_SERIES_TOTAL):
     """シリーズ聖典を読み込む。"""
     series_dir = get_series_dir(series_name)
     files = ['bible.md', 'characters_master.md', 'foreshadowing.md', 'series_summary.md']
@@ -1142,7 +1248,7 @@ def get_series_context(series_name, char_limit_total=20000):
     return context
 
 
-def get_volume_context(project, include_plot=True, char_limit_total=10000):
+def get_volume_context(project, include_plot=True, char_limit_total=CONTEXT_VOLUME_TOTAL):
     """巻固有のコンテキストを読み込む。"""
     project_dir = get_project_path(project)
     support_files = ['character.md', 'worldbuilding.md', 'timeline.md']
@@ -1157,8 +1263,7 @@ def get_volume_context(project, include_plot=True, char_limit_total=10000):
 
     if include_plot:
         fpath = os.path.join(project_dir, 'plot.md')
-        # plot.md はあらすじ部分のみに絞る（最大4000字）
-        content = _read_and_trim(fpath, 4000)
+        content = _read_and_trim(fpath, CONTEXT_PLOT)
         if content:
             context['[この巻のプロット] plot.md'] = content
 
@@ -1174,22 +1279,22 @@ def build_context_text(project, series=None, include_plot=True):
     context = {}
 
     if series:
-        # ① シリーズ聖典（共通・最大2万字）
-        context.update(get_series_context(series, char_limit_total=20000))
-        # ② 巻固有設定（最大1万字）
-        context.update(get_volume_context(project, include_plot=include_plot, char_limit_total=10000))
+        # ① シリーズ聖典
+        context.update(get_series_context(series, char_limit_total=CONTEXT_SERIES_TOTAL))
+        # ② 巻固有設定
+        context.update(get_volume_context(project, include_plot=include_plot, char_limit_total=CONTEXT_VOLUME_TOTAL))
         summary = f'シリーズ「{series}」／巻プロジェクト「{project}」の階層コンテキストを使用'
     else:
-        # 単体プロジェクト：従来どおりだが文字数上限を設ける
+        # 単体プロジェクト
         project_dir = get_project_path(project)
         for fname in ['character.md', 'worldbuilding.md', 'timeline.md']:
             fpath = os.path.join(project_dir, fname)
-            content = _read_and_trim(fpath, 3000)
+            content = _read_and_trim(fpath, CONTEXT_PER_FILE)
             if content:
                 context[fname] = content
         if include_plot:
             fpath = os.path.join(project_dir, 'plot.md')
-            content = _read_and_trim(fpath, 4000)
+            content = _read_and_trim(fpath, CONTEXT_PLOT)
             if content:
                 context['plot.md'] = content
         summary = f'単体プロジェクト「{project}」のコンテキストを使用'
@@ -1213,7 +1318,6 @@ def get_project_context(project):
 
 def generate_plot_template(draft_content):
     """plot_draft.mdの構造を解析して動的なプロットテンプレートを生成"""
-    import re
 
     # 数字を漢数字に変換
     def num_to_kanji(n):
@@ -1345,7 +1449,6 @@ def generate_plot_template(draft_content):
 @app.route('/api/claude/draft_to_plot', methods=['POST'])
 def draft_to_plot():
     """plot_draft.md の内容を読み込み、テンプレートに沿った plot.md を生成・保存する"""
-    import re
 
     data = request.json
     project = data.get('project', '')
@@ -1425,8 +1528,8 @@ def draft_to_plot():
             accumulated_text = ""
 
             with client.messages.stream(
-                model='claude-opus-4-6',
-                max_tokens=30000,
+                model=API_MODEL,
+                max_tokens=API_MAX_TOKENS,
                 messages=[{'role': 'user', 'content': prompt}]
             ) as stream:
                 for text in stream.text_stream:
@@ -1440,7 +1543,7 @@ def draft_to_plot():
 
             yield f"data: {json.dumps({'done': True, 'saved': True})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': safe_error_message(e)})}\n\n"
 
     return Response(
         stream_with_context(generate_stream()),
@@ -1522,10 +1625,10 @@ def plot_draft_to_timeline():
 5. マークダウン形式で出力し、上記のフォーマットを厳守してください"""
 
     message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=30000,
+        model=API_MODEL,
+        max_tokens=API_MAX_TOKENS,
         messages=[{'role': 'user', 'content': prompt}],
-        timeout=600.0
+        timeout=API_TIMEOUT_DEFAULT
     )
 
     generated = message.content[0].text.strip()
@@ -1632,10 +1735,10 @@ def plot_draft_to_worldbuilding():
 5. マークダウン形式で出力し、上記のフォーマットを厳守してください"""
 
     message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=30000,
+        model=API_MODEL,
+        max_tokens=API_MAX_TOKENS,
         messages=[{'role': 'user', 'content': prompt}],
-        timeout=600.0
+        timeout=API_TIMEOUT_DEFAULT
     )
 
     generated = message.content[0].text.strip()
@@ -1693,19 +1796,16 @@ def plot_draft_to_characters():
 - JSON配列のみを出力し、他の説明文は一切不要です"""
 
     message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=30000,
+        model=API_MODEL,
+        max_tokens=API_MAX_TOKENS,
         messages=[{'role': 'user', 'content': prompt}],
-        timeout=60.0
+        timeout=API_TIMEOUT_SHORT
     )
 
     generated = message.content[0].text.strip()
 
     # JSON形式のレスポンスをパース
     try:
-        import json
-        import re
-
         # ```json などのマークダウンコードブロックを除去
         json_match = re.search(r'\[.*\]', generated, re.DOTALL)
         if json_match:
@@ -1753,19 +1853,16 @@ def list_characters_from_file():
 - JSON配列のみを出力し、他の説明文は一切不要です"""
 
     message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=30000,
+        model=API_MODEL,
+        max_tokens=API_MAX_TOKENS,
         messages=[{'role': 'user', 'content': prompt}],
-        timeout=60.0
+        timeout=API_TIMEOUT_SHORT
     )
 
     generated = message.content[0].text.strip()
 
     # JSON形式のレスポンスをパース
     try:
-        import json
-        import re
-
         # ```json などのマークダウンコードブロックを除去
         json_match = re.search(r'\[.*\]', generated, re.DOTALL)
         if json_match:
@@ -1899,10 +1996,10 @@ def generate_character_from_draft():
 6. マークダウン形式で出力し、説明文や前置きは不要です"""
 
     message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=30000,
+        model=API_MODEL,
+        max_tokens=API_MAX_TOKENS,
         messages=[{'role': 'user', 'content': prompt}],
-        timeout=300.0
+        timeout=API_TIMEOUT_DEFAULT
     )
 
     generated = message.content[0].text.strip()
@@ -1993,31 +2090,33 @@ def character_chat_start():
 
     # 初回のキャラクター情報を生成
     initial_message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=30000,
+        model=API_MODEL,
+        max_tokens=API_MAX_TOKENS,
         system=system_prompt,
         messages=[{'role': 'user', 'content': initial_user_message}],
-        timeout=300.0
+        timeout=API_TIMEOUT_DEFAULT
     )
     initial_response = initial_message.content[0].text.strip()
 
     # セッションIDを生成
-    import time
     session_name = character_name if character_name else character_role
     session_id = f"{project}_{session_name}_{int(time.time())}"
 
     # セッション情報を保存
-    chat_sessions[session_id] = {
-        'project': project,
-        'series': series,
-        'character_name': character_name or '新規キャラクター',
-        'system_prompt': system_prompt,
-        'messages': [
-            {'role': 'user', 'content': initial_user_message},
-            {'role': 'assistant', 'content': initial_response}
-        ],
-        'model': 'claude-opus-4-6'
-    }
+    cleanup_sessions()
+    with session_lock:
+        chat_sessions[session_id] = {
+            'project': project,
+            'series': series,
+            'character_name': character_name or '新規キャラクター',
+            'system_prompt': system_prompt,
+            'messages': [
+                {'role': 'user', 'content': initial_user_message},
+                {'role': 'assistant', 'content': initial_response}
+            ],
+            'model': 'claude-opus-4-6',
+            '_created_at': time.time()
+        }
 
     return jsonify({'session_id': session_id, 'response': initial_response})
 
@@ -2115,14 +2214,13 @@ def plot_chat_start():
     def generate_stream():
         try:
             # セッションIDを生成
-            import time
             session_id = f"{project}_plot_{int(time.time())}"
 
             accumulated_text = ""
 
             with client.messages.stream(
-                model='claude-opus-4-6',
-                max_tokens=30000,
+                model=API_MODEL,
+                max_tokens=API_MAX_TOKENS,
                 system=system_prompt,
                 messages=[{'role': 'user', 'content': initial_user_message}]
             ) as stream:
@@ -2131,20 +2229,23 @@ def plot_chat_start():
                     yield f"data: {json.dumps({'chunk': text})}\n\n"
 
             # セッション情報を保存（チャット継続用）
-            chat_sessions[session_id] = {
-                'project': project,
-                'series': series,
-                'system_prompt': system_prompt,
-                'messages': [
-                    {'role': 'user', 'content': initial_user_message},
-                    {'role': 'assistant', 'content': accumulated_text}
-                ],
-                'model': 'claude-opus-4-6'
-            }
+            cleanup_sessions()
+            with session_lock:
+                chat_sessions[session_id] = {
+                    'project': project,
+                    'series': series,
+                    'system_prompt': system_prompt,
+                    'messages': [
+                        {'role': 'user', 'content': initial_user_message},
+                        {'role': 'assistant', 'content': accumulated_text}
+                    ],
+                    'model': 'claude-opus-4-6',
+                    '_created_at': time.time()
+                }
 
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': safe_error_message(e)})}\n\n"
 
     return Response(
         stream_with_context(generate_stream()),
@@ -2259,10 +2360,10 @@ def generate_catchcopy():
 **解説**: [解説文]"""
 
     message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=30000,
+        model=API_MODEL,
+        max_tokens=API_MAX_TOKENS,
         messages=[{'role': 'user', 'content': prompt}],
-        timeout=600.0
+        timeout=API_TIMEOUT_DEFAULT
     )
 
     generated = message.content[0].text.strip()
@@ -2394,10 +2495,10 @@ def generate_title():
 **解説**: [解説文]"""
 
     message = client.messages.create(
-        model='claude-opus-4-6',
-        max_tokens=30000,
+        model=API_MODEL,
+        max_tokens=API_MAX_TOKENS,
         messages=[{'role': 'user', 'content': prompt}],
-        timeout=600.0
+        timeout=API_TIMEOUT_DEFAULT
     )
 
     generated = message.content[0].text.strip()
@@ -2489,11 +2590,10 @@ def generate_chapters():
     char_ctx = ''
     world_ctx = ''
     # 従来の extra_ctx 互換：ctx_text から character/worldbuilding を取り出す（なければ全体を使う）
-    import re as _re
-    m_char = _re.search(r'## \[この巻の設定\] character\.md\n([\s\S]+?)(?=\n## |\Z)', ctx_text)
-    m_world = _re.search(r'## \[この巻の設定\] worldbuilding\.md\n([\s\S]+?)(?=\n## |\Z)', ctx_text)
-    m_char_single = _re.search(r'## character\.md\n([\s\S]+?)(?=\n## |\Z)', ctx_text)
-    m_world_single = _re.search(r'## worldbuilding\.md\n([\s\S]+?)(?=\n## |\Z)', ctx_text)
+    m_char = re.search(r'## \[この巻の設定\] character\.md\n([\s\S]+?)(?=\n## |\Z)', ctx_text)
+    m_world = re.search(r'## \[この巻の設定\] worldbuilding\.md\n([\s\S]+?)(?=\n## |\Z)', ctx_text)
+    m_char_single = re.search(r'## character\.md\n([\s\S]+?)(?=\n## |\Z)', ctx_text)
+    m_world_single = re.search(r'## worldbuilding\.md\n([\s\S]+?)(?=\n## |\Z)', ctx_text)
 
     if m_char:
         char_ctx = m_char.group(1).strip()
@@ -2515,7 +2615,6 @@ def generate_chapters():
     world_ctx = world_ctx  # world_ctx は ctx_text に含まれているので上書き不要
 
     # --- plot.md から章セクションを動的に抽出 ---
-    import re
 
     KANJI_TO_NUM = {
         '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
@@ -2633,9 +2732,8 @@ def generate_chapters():
     # あらすじを取得（コンテキスト補強用、簡潔版）
     synopsis_match = re.search(r'## あらすじ\n+([\s\S]+?)(?=\n##|$)', plot_content)
     synopsis = synopsis_match.group(1).strip() if synopsis_match else ''
-    # コスト削減：あらすじを1000文字以内に制限
-    if len(synopsis) > 1000:
-        synopsis = synopsis[:1000] + '...'
+    if len(synopsis) > CONTEXT_SYNOPSIS:
+        synopsis = synopsis[:CONTEXT_SYNOPSIS] + '...'
 
     # ★ char_ctx / world_ctx は build_context_text で既に設定済み
 
@@ -2659,8 +2757,7 @@ def generate_chapters():
         # 直前のchapterがある場合、その内容を要約して参照情報として追加
         previous_chapter_context = ""
         if previous_chapter_text:
-            # 直前のchapterを要約（最大2000文字に制限してコスト削減）
-            prev_text_trimmed = previous_chapter_text[:2000] + ('...' if len(previous_chapter_text) > 2000 else '')
+            prev_text_trimmed = previous_chapter_text[:CONTEXT_PREV_CHAPTER] + ('...' if len(previous_chapter_text) > CONTEXT_PREV_CHAPTER else '')
             previous_chapter_context = f"""
 【直前の章の内容（矛盾防止のため参照）】
 {prev_text_trimmed}
@@ -2712,10 +2809,10 @@ def generate_chapters():
 
         # max_tokensを増やして十分な長さの本文を生成（3000〜5000字 ≒ 8000〜12000トークン程度）
         message = client.messages.create(
-            model='claude-opus-4-6',
-            max_tokens=30000,  # プロットに忠実な長めの本文を生成するため増量
+            model=API_MODEL,
+            max_tokens=API_MAX_TOKENS,  # プロットに忠実な長めの本文を生成するため増量
             messages=[{'role': 'user', 'content': prompt}],
-            timeout=1800.0  # 30分のタイムアウト
+            timeout=API_TIMEOUT_LONG  # 30分のタイムアウト
         )
 
         chapter_text = message.content[0].text.strip()
@@ -2747,7 +2844,6 @@ def generate_chapters():
 
 def run_notation_check(project_dir, project, series):
     """chapter全体の表記揺れをチェックする"""
-    import re
     from flask import stream_with_context, Response
 
     # --- 全chapter*.txtファイルを収集 ---
@@ -2915,15 +3011,15 @@ def run_notation_check(project_dir, project, series):
     def generate_stream():
         try:
             with client.messages.stream(
-                model='claude-opus-4-6',
-                max_tokens=30000,
+                model=API_MODEL,
+                max_tokens=API_MAX_TOKENS,
                 messages=[{'role': 'user', 'content': prompt}],
             ) as stream:
                 for text in stream.text_stream:
                     yield f"data: {json.dumps({'chunk': text})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': safe_error_message(e)})}\n\n"
 
     return Response(
         stream_with_context(generate_stream()),
@@ -2940,7 +3036,6 @@ def run_consistency_check():
     scope: 'volume' = この巻のみ / 'series' = シリーズ全体（過去巻との照合）
     ストリーミングレスポンスで結果を返す。
     """
-    import re
     from flask import stream_with_context, Response
 
     data    = request.json
@@ -2980,19 +3075,19 @@ def run_consistency_check():
 
         bible_path = os.path.join(series_dir, 'bible.md')
         if os.path.exists(bible_path):
-            content = _read_and_trim(bible_path, 5000)
+            content = _read_and_trim(bible_path, CONTEXT_PER_FILE)
             series_ctx_parts.append(f'### [世界設定バイブル]\n{content}')
 
         chars_path = os.path.join(series_dir, 'characters_master.md')
         if os.path.exists(chars_path):
-            content = _read_and_trim(chars_path, 5000)
+            content = _read_and_trim(chars_path, CONTEXT_PER_FILE)
             series_ctx_parts.append(f'### [キャラクターマスター]\n{content}')
 
     # ② 過去巻サマリー（series スコープのみ）
     past_summaries = ''
     if scope == 'series' and series:
         summary_path = os.path.join(get_series_dir(series), 'series_summary.md')
-        past_summaries = _read_and_trim(summary_path, 6000) or '（まだサマリーが記録されていません）'
+        past_summaries = _read_and_trim(summary_path, CONTEXT_PER_FILE) or '（まだサマリーが記録されていません）'
 
     # ③ 伏線マスターリスト
     foreshadowing_ctx = ''
@@ -3015,7 +3110,7 @@ def run_consistency_check():
     volume_ctx_parts = []
     for fname in ['character.md', 'worldbuilding.md', 'timeline.md', 'plot.md']:
         fpath = os.path.join(project_dir, fname)
-        content = _read_and_trim(fpath, 3000)
+        content = _read_and_trim(fpath, CONTEXT_PER_FILE)
         if content:
             volume_ctx_parts.append(f'### [この巻: {fname}]\n{content}')
 
@@ -3023,13 +3118,12 @@ def run_consistency_check():
     target_ctx = ''
     if target_file:
         fpath = os.path.join(project_dir, target_file)
-        content = _read_and_trim(fpath, 4000)
+        content = _read_and_trim(fpath, CONTEXT_PLOT)
         if content:
             target_ctx = f'### [チェック対象ファイル: {target_file}]\n{content}'
     else:
         # chapter*.txt の最初と最後の1章ずつをサンプルとして含める
-        import re as _re
-        chapter_pat = _re.compile(r'chapter\d+\.txt$', _re.IGNORECASE)
+        chapter_pat = re.compile(r'chapter\d+\.txt$', re.IGNORECASE)
         ch_files = sorted([f for f in os.listdir(project_dir) if chapter_pat.match(f)])
         samples = []
         if ch_files:
@@ -3037,7 +3131,7 @@ def run_consistency_check():
             if len(ch_files) > 1:
                 samples.append(ch_files[-1])
         for cf in samples:
-            content = _read_and_trim(os.path.join(project_dir, cf), 2000)
+            content = _read_and_trim(os.path.join(project_dir, cf), CONTEXT_CHAPTER)
             if content:
                 target_ctx += f'\n\n### [章サンプル: {cf}]\n{content}'
 
@@ -3225,15 +3319,15 @@ def run_consistency_check():
     def generate_stream():
         try:
             with client.messages.stream(
-                model='claude-opus-4-6',
-                max_tokens=30000,  # 整合性チェック結果が途中で切れないように大幅に増加
+                model=API_MODEL,
+                max_tokens=API_MAX_TOKENS,  # 整合性チェック結果が途中で切れないように大幅に増加
                 messages=[{'role': 'user', 'content': prompt}],
             ) as stream:
                 for text in stream.text_stream:
                     yield f"data: {json.dumps({'chunk': text})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': safe_error_message(e)})}\n\n"
 
     return Response(
         stream_with_context(generate_stream()),
@@ -3288,18 +3382,18 @@ def fix_chapter_file():
         series_dir = get_series_dir(series)
         bible_path = os.path.join(series_dir, 'bible.md')
         if os.path.exists(bible_path):
-            content = _read_and_trim(bible_path, 3000)
+            content = _read_and_trim(bible_path, CONTEXT_PER_FILE)
             context_parts.append(f'### [世界設定バイブル]\n{content}')
 
         chars_path = os.path.join(series_dir, 'characters_master.md')
         if os.path.exists(chars_path):
-            content = _read_and_trim(chars_path, 3000)
+            content = _read_and_trim(chars_path, CONTEXT_PER_FILE)
             context_parts.append(f'### [キャラクターマスター]\n{content}')
 
     # この巻の設定ファイル
     for fname in ['character.md', 'plot.md']:
         fpath = os.path.join(project_dir, fname)
-        content = _read_and_trim(fpath, 2000)
+        content = _read_and_trim(fpath, CONTEXT_PER_FILE)
         if content:
             context_parts.append(f'### [{fname}]\n{content}')
 
@@ -3349,10 +3443,10 @@ def fix_chapter_file():
     # Claude APIで修正版を生成
     try:
         message = client.messages.create(
-            model='claude-opus-4-6',
-            max_tokens=30000,
+            model=API_MODEL,
+            max_tokens=API_MAX_TOKENS,
             messages=[{'role': 'user', 'content': prompt}],
-            timeout=1800.0
+            timeout=API_TIMEOUT_LONG
         )
 
         fixed_chapter = message.content[0].text.strip()
@@ -3369,7 +3463,7 @@ def fix_chapter_file():
         })
 
     except Exception as e:
-        return jsonify({'error': f'修正中にエラーが発生しました: {str(e)}'}), 500
+        return safe_error('修正中にエラーが発生しました', e)
 
 
 @app.route('/api/claude/fix_notation_issues', methods=['POST'])
@@ -3392,7 +3486,6 @@ def fix_notation_issues():
     project_dir = os.path.join(BASE_DIR, project)
 
     # --- 全chapter*.txtファイルを収集 ---
-    import re
     chapter_files = []
     chapter_pat = re.compile(r'chapter\d+\.txt$', re.IGNORECASE)
 
@@ -3455,10 +3548,10 @@ def fix_notation_issues():
 
             # Claude APIで修正版を生成
             message = client.messages.create(
-                model='claude-opus-4-6',
-                max_tokens=30000,
+                model=API_MODEL,
+                max_tokens=API_MAX_TOKENS,
                 messages=[{'role': 'user', 'content': prompt}],
-                timeout=1800.0
+                timeout=API_TIMEOUT_LONG
             )
 
             fixed_content = message.content[0].text.strip()
@@ -3470,7 +3563,7 @@ def fix_notation_issues():
             fixed_files.append(file_name)
 
         except Exception as e:
-            errors.append({'file': file_name, 'error': str(e)})
+            errors.append({'file': file_name, 'error': safe_error_message(e)})
 
     if errors:
         return jsonify({
@@ -3518,19 +3611,19 @@ def fix_plot_inconsistencies():
 
         bible_path = os.path.join(series_dir, 'bible.md')
         if os.path.exists(bible_path):
-            content = _read_and_trim(bible_path, 5000)
+            content = _read_and_trim(bible_path, CONTEXT_PER_FILE)
             series_ctx_parts.append(f'### [世界設定バイブル]\n{content}')
 
         chars_path = os.path.join(series_dir, 'characters_master.md')
         if os.path.exists(chars_path):
-            content = _read_and_trim(chars_path, 5000)
+            content = _read_and_trim(chars_path, CONTEXT_PER_FILE)
             series_ctx_parts.append(f'### [キャラクターマスター]\n{content}')
 
     # 他の設定ファイルを読み込む
     volume_ctx_parts = []
     for fname in ['character.md', 'worldbuilding.md', 'timeline.md']:
         fpath = os.path.join(project_dir, fname)
-        content = _read_and_trim(fpath, 3000)
+        content = _read_and_trim(fpath, CONTEXT_PER_FILE)
         if content:
             volume_ctx_parts.append(f'### [{fname}]\n{content}')
 
@@ -3569,14 +3662,13 @@ def fix_plot_inconsistencies():
 
     try:
         message = client.messages.create(
-            model='claude-opus-4-6',
-            max_tokens=30000,
+            model=API_MODEL,
+            max_tokens=API_MAX_TOKENS,
             messages=[{'role': 'user', 'content': prompt}],
         )
         corrected_plot = message.content[0].text
 
         # コードブロックで囲まれている場合は除去
-        import re
         corrected_plot = re.sub(r'^```(?:markdown)?\s*\n', '', corrected_plot)
         corrected_plot = re.sub(r'\n```\s*$', '', corrected_plot)
 
@@ -3591,7 +3683,7 @@ def fix_plot_inconsistencies():
         })
 
     except Exception as e:
-        return jsonify({'error': f'修正中にエラーが発生しました: {str(e)}'}), 500
+        return safe_error('修正中にエラーが発生しました', e)
 
 
 @app.route('/api/claude/generate_spoiler_free_synopsis', methods=['POST'])
@@ -3624,11 +3716,11 @@ def generate_spoiler_free_synopsis():
 
     char_path = os.path.join(project_dir, 'character.md')
     if os.path.exists(char_path):
-        character_content = _read_and_trim(char_path, 3000)
+        character_content = _read_and_trim(char_path, CONTEXT_PER_FILE)
 
     world_path = os.path.join(project_dir, 'worldbuilding.md')
     if os.path.exists(world_path):
-        worldbuilding_content = _read_and_trim(world_path, 3000)
+        worldbuilding_content = _read_and_trim(world_path, CONTEXT_PER_FILE)
 
     # 巻メタ情報
     vol_order = '?'
@@ -3720,10 +3812,10 @@ def generate_spoiler_free_synopsis():
 
     try:
         message = client.messages.create(
-            model='claude-opus-4-6',
-            max_tokens=30000,
+            model=API_MODEL,
+            max_tokens=API_MAX_TOKENS,
             messages=[{'role': 'user', 'content': prompt}],
-            timeout=600.0  # 10分のタイムアウト
+            timeout=API_TIMEOUT_DEFAULT  # 10分のタイムアウト
         )
         synopsis = message.content[0].text
 
@@ -3733,7 +3825,7 @@ def generate_spoiler_free_synopsis():
         })
 
     except Exception as e:
-        return jsonify({'error': f'あらすじ生成中にエラーが発生しました: {str(e)}'}), 500
+        return safe_error('あらすじ生成中にエラーが発生しました', e)
 
 
 @app.route('/api/claude/generate', methods=['POST'])
@@ -4022,8 +4114,8 @@ def generate():
             is_truncated = False
 
             with client.messages.stream(
-                model='claude-opus-4-6',
-                max_tokens=30000,
+                model=API_MODEL,
+                max_tokens=API_MAX_TOKENS,
                 messages=[{'role': 'user', 'content': prompt}]
             ) as stream:
                 for text in stream.text_stream:
@@ -4036,20 +4128,23 @@ def generate():
                     is_truncated = True
 
             # セッションに保存（続きから生成用）- メモリ内保存
-            claude_continue_sessions[session_id] = {
-                'prompt': prompt,
-                'accumulated_text': accumulated_text,
-                'action': action,
-                'project': project,
-                'series': series,
-                'current_content': current_content,
-                'extra_context': extra_context,
-                'is_truncated': is_truncated
-            }
+            cleanup_sessions()
+            with session_lock:
+                claude_continue_sessions[session_id] = {
+                    'prompt': prompt,
+                    'accumulated_text': accumulated_text,
+                    'action': action,
+                    'project': project,
+                    'series': series,
+                    'current_content': current_content,
+                    'extra_context': extra_context,
+                    'is_truncated': is_truncated,
+                    '_created_at': time.time()
+                }
 
             yield f"data: {json.dumps({'done': True, 'session_id': session_id, 'is_truncated': is_truncated})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': safe_error_message(e)})}\n\n"
 
     return Response(
         stream_with_context(generate_stream()),
@@ -4068,10 +4163,11 @@ def claude_continue():
         return jsonify({'error': 'セッションIDが指定されていません'}), 400
 
     # セッションから前回の情報を取得（メモリ内から）
-    if session_id not in claude_continue_sessions:
-        return jsonify({'error': 'セッションが見つかりません'}), 404
+    with session_lock:
+        if session_id not in claude_continue_sessions:
+            return jsonify({'error': 'セッションが見つかりません'}), 404
 
-    session_data = claude_continue_sessions[session_id]
+        session_data = claude_continue_sessions[session_id]
     previous_text = session_data.get('accumulated_text', '')
 
     # 続きを生成するプロンプト
@@ -4093,8 +4189,8 @@ def claude_continue():
             is_truncated = False
 
             with client.messages.stream(
-                model='claude-opus-4-6',
-                max_tokens=30000,
+                model=API_MODEL,
+                max_tokens=API_MAX_TOKENS,
                 messages=[{'role': 'user', 'content': continue_prompt}]
             ) as stream:
                 for text in stream.text_stream:
@@ -4108,20 +4204,23 @@ def claude_continue():
                     is_truncated = True
 
             # 新しいセッションに保存（メモリ内保存）
-            claude_continue_sessions[new_session_id] = {
-                'prompt': session_data.get('prompt', ''),
-                'accumulated_text': accumulated_text,
-                'action': session_data.get('action', ''),
-                'project': session_data.get('project', ''),
-                'series': session_data.get('series', ''),
-                'current_content': session_data.get('current_content', ''),
-                'extra_context': session_data.get('extra_context', ''),
-                'is_truncated': is_truncated
-            }
+            cleanup_sessions()
+            with session_lock:
+                claude_continue_sessions[new_session_id] = {
+                    'prompt': session_data.get('prompt', ''),
+                    'accumulated_text': accumulated_text,
+                    'action': session_data.get('action', ''),
+                    'project': session_data.get('project', ''),
+                    'series': session_data.get('series', ''),
+                    'current_content': session_data.get('current_content', ''),
+                    'extra_context': session_data.get('extra_context', ''),
+                    'is_truncated': is_truncated,
+                    '_created_at': time.time()
+                }
 
             yield f"data: {json.dumps({'done': True, 'session_id': new_session_id, 'is_truncated': is_truncated})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': safe_error_message(e)})}\n\n"
 
     return Response(
         stream_with_context(generate_stream()),
@@ -4163,7 +4262,6 @@ def generate_volume_summary():
     series_summary.md に追記する。
     ストリーミングレスポンスで進捗を返す。
     """
-    import re
     from flask import stream_with_context, Response
 
     data = request.json
@@ -4302,8 +4400,8 @@ def generate_volume_summary():
         generated_text = ''
         try:
             with client.messages.stream(
-                model='claude-opus-4-6',
-                max_tokens=30000,
+                model=API_MODEL,
+                max_tokens=API_MAX_TOKENS,
                 messages=[{'role': 'user', 'content': prompt}],
             ) as stream:
                 for text in stream.text_stream:
@@ -4336,7 +4434,7 @@ def generate_volume_summary():
             yield f"data: {json.dumps({'done': True, 'saved': True, 'vol_order': vol_order, 'vol_title': vol_title})}\n\n"
 
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': safe_error_message(e)})}\n\n"
 
     return Response(
         stream_with_context(generate_stream()),
